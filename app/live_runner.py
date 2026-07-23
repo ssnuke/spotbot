@@ -1,0 +1,311 @@
+from __future__ import annotations
+
+import time
+from datetime import datetime, timezone
+from typing import Optional
+
+from app.binance_client import SymbolFilters, round_step_size
+from app.data_feed import BinanceDataFeed
+from app.notifications import TelegramNotifier
+from app.order_executor import OrderExecutor, SimulatedOrderExecutor
+from app.risk_manager import RiskConfig, RiskManager
+from app.state_store import OpenTradeState, StateStore
+from app.strategy import TAEStrategy, TAEStrategyConfig
+from app.telemetry import Telemetry
+
+DEFAULT_SYMBOL_FILTERS = SymbolFilters(step_size=0.000001, tick_size=0.01, min_notional=0.0)
+
+
+def _extract_fill(order: dict, fallback_price: float) -> tuple[float, float]:
+    """Returns (fill_price, total_fee) from an order response's fills."""
+    fills = order.get("fills") or []
+    if not fills:
+        return fallback_price, 0.0
+    total_qty = sum(float(f["qty"]) for f in fills)
+    total_cost = sum(float(f["qty"]) * float(f["price"]) for f in fills)
+    total_fee = sum(float(f.get("commission", 0.0)) for f in fills)
+    price = total_cost / total_qty if total_qty > 0 else fallback_price
+    return price, total_fee
+
+
+class LiveRunner:
+    """Runs the TAE strategy continuously against live Binance market data, mirroring
+    the backtester's exit logic (partial exit, trailing stop, take-profit) in real time.
+    Orders are filled via a pluggable OrderExecutor — by default a local simulation
+    against live mainnet prices (no exchange account, no real or testnet orders placed).
+    State survives restarts via SQLite, and every open/close is reported to Telegram."""
+
+    def __init__(
+        self,
+        risk_config: RiskConfig,
+        strategy_config: Optional[TAEStrategyConfig] = None,
+        symbol: str = "BTC/USDT",
+        timeframe: str = "5m",
+        poll_interval_seconds: int = 300,
+        warmup_candles: int = 100,
+        stop_loss_pct: float = 0.01,
+        take_profit_pct: float = 0.03,
+        partial_exit_profit_pct: float = 0.01,
+        partial_exit_qty_pct: float = 0.5,
+        trailing_stop_pct: float = 0.005,
+        db_path: str = "live_state.db",
+        notifier: Optional[TelegramNotifier] = None,
+        telemetry: Optional[Telemetry] = None,
+        order_executor: Optional[OrderExecutor] = None,
+        data_feed: Optional[BinanceDataFeed] = None,
+        store: Optional[StateStore] = None,
+        symbol_filters: Optional[SymbolFilters] = None,
+    ):
+        self.symbol = symbol
+        self.timeframe = timeframe
+        self.poll_interval_seconds = poll_interval_seconds
+        self.warmup_candles = warmup_candles
+        self.stop_loss_pct = stop_loss_pct
+        self.take_profit_pct = take_profit_pct
+        self.partial_exit_profit_pct = partial_exit_profit_pct
+        self.partial_exit_qty_pct = partial_exit_qty_pct
+        self.trailing_stop_pct = trailing_stop_pct
+
+        self.data_feed = data_feed or BinanceDataFeed()
+        self.order_executor = order_executor or SimulatedOrderExecutor()
+        self.notifier = notifier or TelegramNotifier()
+        self.telemetry = telemetry or Telemetry(enabled=True)
+        self.strategy = TAEStrategy(strategy_config)
+        self.risk_manager = RiskManager(risk_config)
+        self.store = store or StateStore(db_path)
+        self._symbol_filters = symbol_filters or DEFAULT_SYMBOL_FILTERS
+
+        self._current_day = datetime.now(timezone.utc).date().isoformat()
+        self.cumulative_pnl = 0.0
+        self.closed_trades = 0
+        self.winning_trades = 0
+        self.losing_trades = 0
+        self._restore_state()
+        self._last_candle_open_time: Optional[int] = None
+
+    def _log(self, message: str) -> None:
+        self.telemetry.log(message)
+
+    def _restore_state(self) -> None:
+        state = self.store.load_risk_state()
+        if not state:
+            return
+        self.risk_manager.daily_loss = state["daily_loss"]
+        self.risk_manager.daily_trades = state["daily_trades"]
+        self.risk_manager.open_positions = state["open_positions"]
+        self.risk_manager.allocated_capital = state["allocated_capital"]
+        self.risk_manager.consecutive_losses = state["consecutive_losses"]
+        self.risk_manager.cooldown_remaining = state["cooldown_remaining"]
+        self._current_day = state["current_day"]
+        self.cumulative_pnl = state.get("cumulative_pnl", 0.0) or 0.0
+        self.closed_trades = state.get("closed_trades", 0) or 0
+        self.winning_trades = state.get("winning_trades", 0) or 0
+        self.losing_trades = state.get("losing_trades", 0) or 0
+
+    def _save_risk_state(self) -> None:
+        self.store.save_risk_state(
+            self.risk_manager,
+            self._current_day,
+            cumulative_pnl=self.cumulative_pnl,
+            closed_trades=self.closed_trades,
+            winning_trades=self.winning_trades,
+            losing_trades=self.losing_trades,
+        )
+
+    def _maybe_roll_day(self) -> None:
+        today = datetime.now(timezone.utc).date().isoformat()
+        if today != self._current_day:
+            self._current_day = today
+            self.risk_manager.reset_daily_limits()
+            self._log(f"New day {today}: reset daily loss and trade counters")
+            self._save_risk_state()
+
+    def _fetch_price_history(self) -> tuple[list, Optional[int]]:
+        candles = self.data_feed.get_recent_candles(self.symbol, interval=self.timeframe, limit=self.warmup_candles)
+        if len(candles) < 2:
+            return [], None
+        closed = candles[:-1]  # the last candle from Binance's klines endpoint is still forming
+        prices = [float(c[4]) for c in closed]
+        last_open_time = int(closed[-1][0])
+        return prices, last_open_time
+
+    def _open_position(self, signal, entry_price: float) -> None:
+        stop_loss_price = (
+            entry_price * (1 - self.stop_loss_pct) if signal.side == "buy" else entry_price * (1 + self.stop_loss_pct)
+        )
+        if not self.risk_manager.validate_trade(entry_price, stop_loss_price, side=signal.side):
+            self._log(f"Risk blocked trade: entry={entry_price:.2f} side={signal.side}")
+            return
+
+        plan = self.risk_manager.create_trade_plan(entry_price, stop_loss_price, side=signal.side)
+        quantity = round_step_size(plan.position_size, self._symbol_filters.step_size)
+        if quantity <= 0 or quantity * entry_price < self._symbol_filters.min_notional:
+            self._log(f"Order below exchange minimums, skipping: qty={quantity}")
+            self.risk_manager.allocated_capital = max(0.0, self.risk_manager.allocated_capital - plan.notional)
+            self._save_risk_state()
+            return
+
+        order_side = "BUY" if signal.side == "buy" else "SELL"
+        order = self.order_executor.place_order(self.symbol, order_side, quantity, reference_price=entry_price)
+        fill_price, entry_fee = _extract_fill(order, fallback_price=entry_price)
+
+        risk_per_unit = abs(entry_price - stop_loss_price)
+        reward_ratio = self.risk_manager.config.reward_ratio
+        take_profit_price = (
+            entry_price + risk_per_unit * reward_ratio
+            if signal.side == "buy"
+            else entry_price - risk_per_unit * reward_ratio
+        )
+
+        trade_state = OpenTradeState(
+            id=None,
+            symbol=self.symbol,
+            side=signal.side,
+            entry_price=entry_price,
+            entry_execution_price=fill_price,
+            stop_loss=stop_loss_price,
+            take_profit=take_profit_price,
+            quantity=quantity,
+            remaining_quantity=quantity,
+            trailing_stop=stop_loss_price,
+            partial_exit_done=False,
+            entry_order_id=str(order.get("orderId", "")),
+            opened_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self.store.add_open_trade(trade_state)
+        self.risk_manager.open_positions += 1
+        self._save_risk_state()
+        self._log(
+            f"Opened {signal.side} {quantity} {self.symbol} @ {fill_price:.2f} "
+            f"(SL={stop_loss_price:.2f} TP={take_profit_price:.2f}, fee={entry_fee:.4f})"
+        )
+        self.notifier.send(
+            f"\U0001F4C8 {signal.side.upper()} {self.symbol}\n"
+            f"Entry: {fill_price:.2f}\nStop: {stop_loss_price:.2f}\nTarget: {take_profit_price:.2f}\n"
+            f"Qty: {quantity}"
+        )
+
+    def _take_partial_exit(self, trade: OpenTradeState, current_price: float) -> None:
+        partial_qty = round_step_size(trade.quantity * self.partial_exit_qty_pct, self._symbol_filters.step_size)
+        if partial_qty <= 0 or partial_qty >= trade.remaining_quantity:
+            return
+
+        close_side = "SELL" if trade.side == "buy" else "BUY"
+        order = self.order_executor.place_order(self.symbol, close_side, partial_qty, reference_price=current_price)
+        partial_price, partial_fee = _extract_fill(order, fallback_price=current_price)
+        if trade.side == "buy":
+            partial_pnl = partial_qty * (partial_price - trade.entry_execution_price) - partial_fee
+            trailing_stop = max(trade.stop_loss, current_price * (1 - self.trailing_stop_pct))
+        else:
+            partial_pnl = partial_qty * (trade.entry_execution_price - partial_price) - partial_fee
+            trailing_stop = min(trade.stop_loss, current_price * (1 + self.trailing_stop_pct))
+
+        trade.remaining_quantity -= partial_qty
+        trade.partial_exit_done = True
+        trade.trailing_stop = trailing_stop
+        self.store.update_open_trade(
+            trade.id,
+            remaining_quantity=trade.remaining_quantity,
+            partial_exit_done=1,
+            trailing_stop=trailing_stop,
+        )
+        self.cumulative_pnl += partial_pnl
+        self._save_risk_state()
+        self._log(f"Partial exit {partial_qty} {trade.symbol} @ {partial_price:.2f} pnl={partial_pnl:.2f}")
+        self.notifier.send(
+            f"⚖️ Partial exit {trade.symbol} @ {partial_price:.2f}\n"
+            f"PnL: {partial_pnl:+.2f}\nRunning total: {self.cumulative_pnl:+.2f}"
+        )
+
+    def _close_trade(self, trade: OpenTradeState, current_price: float, exit_reason: str) -> None:
+        close_side = "SELL" if trade.side == "buy" else "BUY"
+        order = self.order_executor.place_order(
+            self.symbol, close_side, trade.remaining_quantity, reference_price=current_price
+        )
+        exit_price, exit_fee = _extract_fill(order, fallback_price=current_price)
+        if trade.side == "buy":
+            pnl = trade.remaining_quantity * (exit_price - trade.entry_execution_price) - exit_fee
+        else:
+            pnl = trade.remaining_quantity * (trade.entry_execution_price - exit_price) - exit_fee
+
+        notional = trade.quantity * trade.entry_execution_price
+        self.risk_manager.register_trade_result(pnl, notional=notional)
+        self.store.remove_open_trade(trade.id)
+
+        self.cumulative_pnl += pnl
+        self.closed_trades += 1
+        if pnl > 0:
+            self.winning_trades += 1
+        elif pnl < 0:
+            self.losing_trades += 1
+        self._save_risk_state()
+
+        self._log(
+            f"Closed {trade.side} {trade.symbol} @ {exit_price:.2f} reason={exit_reason} "
+            f"pnl={pnl:.2f} cumulative_pnl={self.cumulative_pnl:.2f}"
+        )
+        win_rate = (self.winning_trades / self.closed_trades * 100) if self.closed_trades else 0.0
+        self.notifier.send(
+            f"✅ Closed {trade.side.upper()} {trade.symbol} @ {exit_price:.2f} ({exit_reason})\n"
+            f"Trade PnL: {pnl:+.2f}\n"
+            f"Running PnL: {self.cumulative_pnl:+.2f} over {self.closed_trades} trades "
+            f"({win_rate:.1f}% win rate)"
+        )
+
+    def _check_open_trades(self, current_price: float) -> None:
+        for trade in self.store.list_open_trades():
+            if trade.side == "buy":
+                if not trade.partial_exit_done and current_price >= trade.entry_price * (
+                    1 + self.partial_exit_profit_pct
+                ):
+                    self._take_partial_exit(trade, current_price)
+
+                if current_price >= trade.take_profit:
+                    self._close_trade(trade, current_price, "take_profit")
+                elif current_price <= trade.trailing_stop:
+                    self._close_trade(trade, current_price, "trailing_stop")
+            else:
+                if not trade.partial_exit_done and current_price <= trade.entry_price * (
+                    1 - self.partial_exit_profit_pct
+                ):
+                    self._take_partial_exit(trade, current_price)
+
+                if current_price <= trade.take_profit:
+                    self._close_trade(trade, current_price, "take_profit")
+                elif current_price >= trade.trailing_stop:
+                    self._close_trade(trade, current_price, "trailing_stop")
+
+    def run_once(self) -> None:
+        self._maybe_roll_day()
+        prices, last_open_time = self._fetch_price_history()
+        if not prices:
+            self._log("No price data available")
+            return
+
+        current_price = prices[-1]
+        self._check_open_trades(current_price)
+
+        if last_open_time == self._last_candle_open_time:
+            return  # no new closed candle since last check
+        self._last_candle_open_time = last_open_time
+
+        if self.risk_manager.open_positions >= self.risk_manager.config.max_open_positions:
+            return
+
+        signal = self.strategy.generate_signal(prices, self.symbol)
+        if signal is None:
+            self._log("No trading signal generated")
+            return
+
+        self._open_position(signal, entry_price=current_price)
+
+    def run_forever(self) -> None:
+        mode = "simulated (no real orders)" if isinstance(self.order_executor, SimulatedOrderExecutor) else "testnet"
+        self._log(f"Starting live paper trading ({mode}) for {self.symbol} on {self.timeframe} candles")
+        while True:
+            try:
+                self.run_once()
+            except Exception as exc:  # keep the loop alive across transient API errors
+                self._log(f"Error in run_once: {exc}")
+            self.risk_manager.tick()
+            time.sleep(self.poll_interval_seconds)

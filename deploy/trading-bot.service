@@ -1,0 +1,23 @@
+[Unit]
+Description=BTC/USDT paper trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=botuser
+WorkingDirectory=/home/botuser/trading-bot
+ExecStart=/home/botuser/trading-bot/.venv/bin/python3 main.py --mode bot
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Basic sandboxing: the service can only write inside its own working directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/botuser/trading-bot
+
+[Install]
+WantedBy=multi-user.target

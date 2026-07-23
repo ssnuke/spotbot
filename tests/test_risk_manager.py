@@ -1,0 +1,90 @@
+import pytest
+
+from app.risk_manager import RiskConfig, RiskManager
+
+
+def test_trade_plan_created_with_valid_risk_profile():
+    manager = RiskManager(RiskConfig(capital=50000, risk_per_trade_pct=0.005))
+    plan = manager.create_trade_plan(entry_price=100.0, stop_loss_price=95.0)
+
+    assert plan.entry_price == 100.0
+    assert plan.stop_loss_price == 95.0
+    assert plan.take_profit_price == 110.0
+    assert plan.position_size == 250.0 / 5.0
+
+
+def test_trade_rejected_when_daily_loss_limit_reached():
+    manager = RiskManager(RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_daily_loss_pct=0.01))
+    manager.daily_loss = 500.0
+    assert not manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)
+
+
+def test_position_size_capped_by_max_position_pct():
+    # risk sizing alone would want 10000/1.0 = 10000 units (notional 1,000,000 on 50k capital);
+    # the notional cap should clamp this down to max_position_pct of capital instead.
+    manager = RiskManager(RiskConfig(capital=50000, risk_per_trade_pct=0.2, max_position_pct=0.1))
+    plan = manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0)
+
+    assert plan.notional <= 50000 * 0.1 + 1e-6
+    assert plan.position_size == (50000 * 0.1) / 100.0
+
+
+def test_trade_rejected_when_capital_fully_allocated():
+    # risk_per_trade_pct=0.2 makes every trade clamp to exactly max_position_pct (10%) of
+    # capital, so 10 trades fully allocate the account and the 11th must be rejected.
+    manager = RiskManager(
+        RiskConfig(
+            capital=50000,
+            risk_per_trade_pct=0.2,
+            max_position_pct=0.1,
+            max_open_positions=20,
+            max_trades_per_day=20,
+        )
+    )
+    for _ in range(10):
+        manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0)
+
+    assert manager.allocated_capital == pytest.approx(50000.0, rel=1e-6)
+    assert not manager.validate_trade(entry_price=100.0, stop_loss_price=99.0)
+
+
+def test_allocated_capital_released_on_trade_close():
+    manager = RiskManager(RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_position_pct=0.1))
+    plan = manager.create_trade_plan(entry_price=100.0, stop_loss_price=95.0)
+    assert manager.allocated_capital == pytest.approx(plan.notional)
+
+    manager.register_trade_result(pnl=10.0, notional=plan.notional)
+    assert manager.allocated_capital == pytest.approx(0.0)
+
+
+def test_cooldown_triggered_after_consecutive_losses():
+    manager = RiskManager(
+        RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_consecutive_losses=3, cooldown_period=5)
+    )
+    for _ in range(3):
+        manager.register_trade_result(pnl=-10.0, notional=0.0)
+
+    assert manager.cooldown_remaining == 5
+    assert not manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)
+
+    for _ in range(4):
+        manager.tick()
+    assert not manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)  # 1 tick left
+
+    manager.tick()
+    assert manager.cooldown_remaining == 0
+    assert manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)
+
+
+def test_consecutive_loss_streak_reset_by_a_win():
+    manager = RiskManager(
+        RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_consecutive_losses=3, cooldown_period=5)
+    )
+    manager.register_trade_result(pnl=-10.0, notional=0.0)
+    manager.register_trade_result(pnl=-10.0, notional=0.0)
+    manager.register_trade_result(pnl=5.0, notional=0.0)
+    manager.register_trade_result(pnl=-10.0, notional=0.0)
+
+    assert manager.consecutive_losses == 1
+    assert manager.cooldown_remaining == 0
+    assert manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)

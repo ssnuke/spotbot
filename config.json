@@ -1,0 +1,59 @@
+{
+  "risk": {
+    "capital": 50000.0,
+    "risk_per_trade_pct": 0.005,
+    "reward_ratio": 2.0,
+    "max_daily_loss_pct": 0.01,
+    "max_drawdown_pct": 0.05,
+    "max_trades_per_day": 5,
+    "max_open_positions": 3,
+    "max_position_pct": 0.1,
+    "max_consecutive_losses": 3,
+    "cooldown_period": 12
+  },
+  "backtest": {
+    "start_capital": 50000.0,
+    "timeframe": "5m",
+    "risk_per_trade_pct": 0.003,
+    "max_daily_loss_pct": 0.03,
+    "max_trades_per_day": 8,
+    "max_open_positions": 3,
+    "max_position_pct": 0.1,
+    "max_consecutive_losses": 3,
+    "cooldown_period": 12,
+    "reward_ratio": 2.0,
+    "stop_loss_pct": 0.01,
+    "take_profit_pct": 0.03,
+    "partial_exit_profit_pct": 0.01,
+    "partial_exit_qty_pct": 0.5,
+    "trailing_stop_pct": 0.005,
+    "trade_fee_pct": 0.0005,
+    "slippage_pct": 0.0005
+  },
+  "strategy": {
+    "short_window": 5,
+    "long_window": 20,
+    "value_window": 24,
+    "value_zone_pct": 0.03,
+    "reversal_lookback": 2,
+    "signal_threshold_pct": 0.001,
+    "min_trend_distance_pct": 0.001,
+    "min_signal_score": 0.70
+  },
+  "live": {
+    "timeframe": "5m",
+    "poll_interval_seconds": 300,
+    "warmup_candles": 100,
+    "stop_loss_pct": 0.01,
+    "take_profit_pct": 0.03,
+    "partial_exit_profit_pct": 0.01,
+    "partial_exit_qty_pct": 0.5,
+    "trailing_stop_pct": 0.005,
+    "db_path": "live_state.db",
+    "execution_mode": "simulated"
+  },
+  "symbol": "BTC/USDT",
+  "csv_path": "historical.csv",
+  "download_if_missing": true,
+  "download_limit": 1000
+}

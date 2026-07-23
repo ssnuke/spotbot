@@ -1,0 +1,12 @@
+.env
+live_state.db
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Downloaded/derived market data and backtest exports (regenerable via --download-if-missing)
+*.csv
+
+# Claude Code harness-generated project settings, not part of the application
+.claude/
