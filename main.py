@@ -370,6 +370,8 @@ def main() -> None:
             partial_exit_qty_pct=config.live.partial_exit_qty_pct,
             trailing_stop_pct=config.live.trailing_stop_pct,
             db_path=config.live.db_path,
+            summary_interval_seconds=config.live.summary_interval_seconds,
+            command_poll_interval_seconds=config.live.command_poll_interval_seconds,
             telemetry=Telemetry(enabled=True, logger=print if args.verbose else None),
         )
     except ValueError as error:

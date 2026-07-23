@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import signal
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -14,6 +15,15 @@ from app.strategy import TAEStrategy, TAEStrategyConfig
 from app.telemetry import Telemetry
 
 DEFAULT_SYMBOL_FILTERS = SymbolFilters(step_size=0.000001, tick_size=0.01, min_notional=0.0)
+
+HELP_TEXT = (
+    "\U0001F916 Commands:\n"
+    "/status - open positions, PnL, and risk counters\n"
+    "/pnl - cumulative PnL and trade counts\n"
+    "/trades - list currently open trades\n"
+    "/price - current market price\n"
+    "/help - show this message"
+)
 
 
 def _extract_fill(order: dict, fallback_price: float) -> tuple[float, float]:
@@ -49,6 +59,8 @@ class LiveRunner:
         partial_exit_qty_pct: float = 0.5,
         trailing_stop_pct: float = 0.005,
         db_path: str = "live_state.db",
+        summary_interval_seconds: int = 3600,
+        command_poll_interval_seconds: int = 5,
         notifier: Optional[TelegramNotifier] = None,
         telemetry: Optional[Telemetry] = None,
         order_executor: Optional[OrderExecutor] = None,
@@ -65,6 +77,8 @@ class LiveRunner:
         self.partial_exit_profit_pct = partial_exit_profit_pct
         self.partial_exit_qty_pct = partial_exit_qty_pct
         self.trailing_stop_pct = trailing_stop_pct
+        self.summary_interval_seconds = summary_interval_seconds
+        self.command_poll_interval_seconds = command_poll_interval_seconds
 
         self.data_feed = data_feed or BinanceDataFeed()
         self.order_executor = order_executor or SimulatedOrderExecutor()
@@ -82,6 +96,8 @@ class LiveRunner:
         self.losing_trades = 0
         self._restore_state()
         self._last_candle_open_time: Optional[int] = None
+        self._update_offset: Optional[int] = None
+        self._stop_requested = False
 
     def _log(self, message: str) -> None:
         self.telemetry.log(message)
@@ -275,6 +291,84 @@ class LiveRunner:
                 elif current_price >= trade.trailing_stop:
                     self._close_trade(trade, current_price, "trailing_stop")
 
+    def _status_message(self, prefix: str = "\U0001F4CA Status") -> str:
+        open_trades = self.store.list_open_trades()
+        win_rate = (self.winning_trades / self.closed_trades * 100) if self.closed_trades else 0.0
+        return (
+            f"{prefix}\n"
+            f"Symbol: {self.symbol}\n"
+            f"Open positions: {len(open_trades)}\n"
+            f"Closed trades: {self.closed_trades} (W:{self.winning_trades} L:{self.losing_trades}, "
+            f"{win_rate:.1f}% win rate)\n"
+            f"Cumulative PnL: {self.cumulative_pnl:+.2f}\n"
+            f"Capital: {self.risk_manager.config.capital:,.2f}\n"
+            f"Daily trades used: {self.risk_manager.daily_trades}/{self.risk_manager.config.max_trades_per_day}\n"
+            f"Cooldown remaining: {self.risk_manager.cooldown_remaining} ticks"
+        )
+
+    def _open_trades_message(self) -> str:
+        open_trades = self.store.list_open_trades()
+        if not open_trades:
+            return "No open trades right now."
+        lines = ["\U0001F4C8 Open trades:"]
+        for trade in open_trades:
+            lines.append(
+                f"{trade.side.upper()} {trade.symbol} qty={trade.remaining_quantity:.6f} "
+                f"entry={trade.entry_execution_price:.2f} stop={trade.trailing_stop:.2f} "
+                f"target={trade.take_profit:.2f}"
+            )
+        return "\n".join(lines)
+
+    def _send_started_message(self) -> None:
+        mode = "simulated (no real orders)" if isinstance(self.order_executor, SimulatedOrderExecutor) else "testnet"
+        resumed = self.closed_trades > 0 or bool(self.store.list_open_trades())
+        header = f"\U0001F7E2 Bot started ({'resumed' if resumed else 'fresh'} state)"
+        self._log(f"Starting live paper trading ({mode}) for {self.symbol} on {self.timeframe} candles")
+        self.notifier.send(
+            f"{header}\n"
+            f"Symbol: {self.symbol}\nTimeframe: {self.timeframe}\nMode: {mode}\n"
+            f"Capital: {self.risk_manager.config.capital:,.2f}\n"
+            f"Cumulative PnL so far: {self.cumulative_pnl:+.2f} over {self.closed_trades} trades"
+        )
+
+    def _send_stopped_message(self) -> None:
+        self._log("Bot stopping")
+        self.notifier.send(self._status_message(prefix="\U0001F534 Bot stopped"))
+
+    def _handle_command(self, text: str) -> None:
+        command = text.strip().lower().split()[0] if text.strip() else ""
+        if command in ("/start", "/help"):
+            self.notifier.send(HELP_TEXT)
+        elif command == "/status":
+            self.notifier.send(self._status_message())
+        elif command == "/pnl":
+            self.notifier.send(self._status_message(prefix="\U0001F4B0 PnL"))
+        elif command == "/trades":
+            self.notifier.send(self._open_trades_message())
+        elif command == "/price":
+            price = self.data_feed.get_latest_price(self.symbol)
+            self.notifier.send(f"{self.symbol}: {price:.2f}" if price is not None else "Price unavailable right now.")
+        elif command:
+            self.notifier.send("Unknown command. Send /help to see what I understand.")
+
+    def _poll_commands(self) -> None:
+        updates = self.notifier.get_updates(offset=self._update_offset, timeout=0)
+        for update in updates:
+            self._update_offset = update["update_id"] + 1
+            message = update.get("message") or {}
+            chat_id = str(message.get("chat", {}).get("id", ""))
+            text = message.get("text") or ""
+            if not text or chat_id != str(self.notifier.chat_id):
+                continue
+            self._handle_command(text)
+
+    def _install_signal_handlers(self) -> None:
+        def _request_stop(signum, frame):
+            self._stop_requested = True
+
+        signal.signal(signal.SIGTERM, _request_stop)
+        signal.signal(signal.SIGINT, _request_stop)
+
     def run_once(self) -> None:
         self._maybe_roll_day()
         prices, last_open_time = self._fetch_price_history()
@@ -300,12 +394,32 @@ class LiveRunner:
         self._open_position(signal, entry_price=current_price)
 
     def run_forever(self) -> None:
-        mode = "simulated (no real orders)" if isinstance(self.order_executor, SimulatedOrderExecutor) else "testnet"
-        self._log(f"Starting live paper trading ({mode}) for {self.symbol} on {self.timeframe} candles")
-        while True:
+        self._install_signal_handlers()
+        self._send_started_message()
+
+        last_run_at = 0.0
+        last_summary_at = time.time()
+
+        while not self._stop_requested:
             try:
-                self.run_once()
-            except Exception as exc:  # keep the loop alive across transient API errors
-                self._log(f"Error in run_once: {exc}")
-            self.risk_manager.tick()
-            time.sleep(self.poll_interval_seconds)
+                self._poll_commands()
+            except Exception as exc:
+                self._log(f"Error polling Telegram commands: {exc}")
+
+            now = time.time()
+            if now - last_run_at >= self.poll_interval_seconds:
+                last_run_at = now
+                try:
+                    self.run_once()
+                except Exception as exc:  # keep the loop alive across transient API errors
+                    self._log(f"Error in run_once: {exc}")
+                self.risk_manager.tick()
+
+            now = time.time()
+            if now - last_summary_at >= self.summary_interval_seconds:
+                last_summary_at = now
+                self.notifier.send(self._status_message(prefix="⏱ Periodic update"))
+
+            time.sleep(self.command_poll_interval_seconds)
+
+        self._send_stopped_message()

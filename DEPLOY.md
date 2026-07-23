@@ -17,7 +17,8 @@ SSH in as root (or whatever the provider gives you) and create a dedicated
 non-root user to run the bot under — don't run it as root:
 
 ```bash
-adduser botuser
+
+
 usermod -aG sudo botuser   # optional, only if you need sudo later
 su - botuser
 ```
@@ -115,11 +116,23 @@ trade opens or closes — that's expected, not a bug.
 ## 8. Install the systemd service
 
 A template unit file is at `deploy/trading-bot.service`. Copy it and fix the
-paths/user to match your setup:
+paths/user to match your setup — **the path substitution must run before the
+username substitution**, otherwise `/home/botuser/...` silently becomes
+`/home/<user>/...` even when running as `root` (whose real home is `/root`,
+not `/home/root`), leaving a stale path that breaks systemd's sandboxing:
 
 ```bash
-sed -e "s/botuser/$(whoami)/g" -e "s|/home/botuser/trading-bot|$HOME/trading-bot|g" \
+sed -e "s#/home/botuser/trading-bot#$HOME/trading-bot#g" -e "s/botuser/$(whoami)/g" \
   deploy/trading-bot.service | sudo tee /etc/systemd/system/trading-bot.service
+```
+
+If you're running this as `root` (common on VPS providers that only give you
+root SSH access directly), double-check the result — `WorkingDirectory`,
+`ExecStart`, and `ReadWritePaths` should all read `/root/trading-bot`, not
+`/home/root/trading-bot`:
+
+```bash
+grep -E "WorkingDirectory|ExecStart|ReadWritePaths|User=" /etc/systemd/system/trading-bot.service
 ```
 
 Then:
@@ -142,7 +155,27 @@ journalctl -u trading-bot -f
 `-f` follows the log live, same as `tail -f`. `Ctrl+C` to stop watching (the
 service keeps running in the background).
 
-## 10. Common operations
+## 10. Talking to the bot on Telegram
+
+Beyond automatic notifications (bot started/stopped, trade opened/closed,
+periodic status updates every `live.summary_interval_seconds`, default
+hourly), the bot listens for commands sent to it in your configured chat:
+
+- `/status` — open positions, cumulative PnL, win/loss counts, cooldown state
+- `/pnl` — same summary, framed as a PnL check
+- `/trades` — details of any currently open trade(s)
+- `/price` — current market price for the configured symbol
+- `/help` — lists all commands
+
+Only messages from the `TELEGRAM_CHAT_ID` configured in `.env` get a reply —
+commands from any other chat are silently ignored.
+
+Sending `systemctl stop`, `Ctrl+C`, or any signal that terminates the process
+(SIGTERM/SIGINT) triggers a graceful shutdown: the bot finishes its current
+loop iteration, sends a final "Bot stopped" summary to Telegram, and exits
+within a few seconds — it does not need to wait out a full poll interval.
+
+## 11. Common operations
 
 ```bash
 sudo systemctl stop trading-bot       # stop the bot

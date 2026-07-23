@@ -25,3 +25,23 @@ class TelegramNotifier:
             return True
         except requests.RequestException:
             return False
+
+    def get_updates(self, offset: Optional[int] = None, timeout: int = 0) -> list:
+        """Fetches new incoming messages (e.g. slash commands) sent to the bot."""
+        if not self.bot_token or not self.chat_id:
+            return []
+
+        params: dict = {"timeout": timeout}
+        if offset is not None:
+            params["offset"] = offset
+
+        try:
+            response = requests.get(
+                f"https://api.telegram.org/bot{self.bot_token}/getUpdates",
+                params=params,
+                timeout=timeout + 10,
+            )
+            response.raise_for_status()
+            return response.json().get("result", [])
+        except requests.RequestException:
+            return []
