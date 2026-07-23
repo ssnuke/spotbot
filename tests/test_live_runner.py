@@ -58,6 +58,7 @@ def _make_runner(candles, **overrides):
         data_feed=FakeDataFeed(candles),
         store=StateStore(":memory:"),
         telemetry=Telemetry(enabled=False, logger=None),
+        fx_rate_provider=lambda: None,  # disable INR conversion (and real network calls) by default
     )
     kwargs.update(overrides)
     return LiveRunner(**kwargs)
@@ -149,6 +150,15 @@ def test_price_command_uses_data_feed_latest_price():
     assert notifier.sent == ["BTC/USDT: 12345.67"]
 
 
+def test_openpositions_is_an_alias_for_trades():
+    notifier = FakeNotifier()
+    runner = _make_runner(_make_candles([100.0] * 5), notifier=notifier)
+
+    runner._handle_command("/openpositions")
+
+    assert notifier.sent == ["No open trades right now."]
+
+
 def test_poll_commands_ignores_messages_from_other_chats():
     notifier = FakeNotifier(chat_id="12345")
     runner = _make_runner(_make_candles([100.0] * 5), notifier=notifier)
@@ -181,3 +191,26 @@ def test_started_message_reports_fresh_vs_resumed_state():
     runner.closed_trades = 5
     runner._send_started_message()
     assert "resumed state" in notifier.sent[0]
+
+
+def test_status_message_includes_inr_conversion_when_rate_available():
+    notifier = FakeNotifier()
+    runner = _make_runner(
+        _make_candles([100.0] * 5), notifier=notifier, fx_rate_provider=lambda: 83.0
+    )
+    runner.cumulative_pnl = 10.0
+
+    message = runner._status_message()
+
+    assert "+10.00 USDT (≈ ₹+830.00)" in message
+    assert "50,000.00 USDT (≈ ₹4,150,000.00)" in message
+
+
+def test_status_message_omits_inr_when_rate_unavailable():
+    notifier = FakeNotifier()
+    runner = _make_runner(_make_candles([100.0] * 5), notifier=notifier, fx_rate_provider=lambda: None)
+
+    message = runner._status_message()
+
+    assert "≈" not in message
+    assert "USDT" in message

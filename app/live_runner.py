@@ -3,10 +3,11 @@ from __future__ import annotations
 import signal
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 from app.binance_client import SymbolFilters, round_step_size
 from app.data_feed import BinanceDataFeed
+from app.fx import get_usd_inr_rate
 from app.notifications import TelegramNotifier
 from app.order_executor import OrderExecutor, SimulatedOrderExecutor
 from app.risk_manager import RiskConfig, RiskManager
@@ -20,7 +21,7 @@ HELP_TEXT = (
     "\U0001F916 Commands:\n"
     "/status - open positions, PnL, and risk counters\n"
     "/pnl - cumulative PnL and trade counts\n"
-    "/trades - list currently open trades\n"
+    "/trades or /openpositions - list currently open trades\n"
     "/price - current market price\n"
     "/help - show this message"
 )
@@ -67,7 +68,9 @@ class LiveRunner:
         data_feed: Optional[BinanceDataFeed] = None,
         store: Optional[StateStore] = None,
         symbol_filters: Optional[SymbolFilters] = None,
+        fx_rate_provider: Optional[Callable[[], Optional[float]]] = None,
     ):
+        self._fx_rate_provider = fx_rate_provider or get_usd_inr_rate
         self.symbol = symbol
         self.timeframe = timeframe
         self.poll_interval_seconds = poll_interval_seconds
@@ -101,6 +104,15 @@ class LiveRunner:
 
     def _log(self, message: str) -> None:
         self.telemetry.log(message)
+
+    def _fmt_usdt(self, amount: float, signed: bool = False) -> str:
+        number = f"{amount:+,.2f}" if signed else f"{amount:,.2f}"
+        rate = self._fx_rate_provider()
+        if rate is None:
+            return f"{number} USDT"
+        inr = amount * rate
+        inr_str = f"{inr:+,.2f}" if signed else f"{inr:,.2f}"
+        return f"{number} USDT (≈ ₹{inr_str})"
 
     def _restore_state(self) -> None:
         state = self.store.load_risk_state()
@@ -230,7 +242,8 @@ class LiveRunner:
         self._log(f"Partial exit {partial_qty} {trade.symbol} @ {partial_price:.2f} pnl={partial_pnl:.2f}")
         self.notifier.send(
             f"⚖️ Partial exit {trade.symbol} @ {partial_price:.2f}\n"
-            f"PnL: {partial_pnl:+.2f}\nRunning total: {self.cumulative_pnl:+.2f}"
+            f"PnL: {self._fmt_usdt(partial_pnl, signed=True)}\n"
+            f"Running total: {self._fmt_usdt(self.cumulative_pnl, signed=True)}"
         )
 
     def _close_trade(self, trade: OpenTradeState, current_price: float, exit_reason: str) -> None:
@@ -263,8 +276,8 @@ class LiveRunner:
         win_rate = (self.winning_trades / self.closed_trades * 100) if self.closed_trades else 0.0
         self.notifier.send(
             f"✅ Closed {trade.side.upper()} {trade.symbol} @ {exit_price:.2f} ({exit_reason})\n"
-            f"Trade PnL: {pnl:+.2f}\n"
-            f"Running PnL: {self.cumulative_pnl:+.2f} over {self.closed_trades} trades "
+            f"Trade PnL: {self._fmt_usdt(pnl, signed=True)}\n"
+            f"Running PnL: {self._fmt_usdt(self.cumulative_pnl, signed=True)} over {self.closed_trades} trades "
             f"({win_rate:.1f}% win rate)"
         )
 
@@ -300,8 +313,8 @@ class LiveRunner:
             f"Open positions: {len(open_trades)}\n"
             f"Closed trades: {self.closed_trades} (W:{self.winning_trades} L:{self.losing_trades}, "
             f"{win_rate:.1f}% win rate)\n"
-            f"Cumulative PnL: {self.cumulative_pnl:+.2f}\n"
-            f"Capital: {self.risk_manager.config.capital:,.2f}\n"
+            f"Cumulative PnL: {self._fmt_usdt(self.cumulative_pnl, signed=True)}\n"
+            f"Capital: {self._fmt_usdt(self.risk_manager.config.capital)}\n"
             f"Daily trades used: {self.risk_manager.daily_trades}/{self.risk_manager.config.max_trades_per_day}\n"
             f"Cooldown remaining: {self.risk_manager.cooldown_remaining} ticks"
         )
@@ -327,8 +340,8 @@ class LiveRunner:
         self.notifier.send(
             f"{header}\n"
             f"Symbol: {self.symbol}\nTimeframe: {self.timeframe}\nMode: {mode}\n"
-            f"Capital: {self.risk_manager.config.capital:,.2f}\n"
-            f"Cumulative PnL so far: {self.cumulative_pnl:+.2f} over {self.closed_trades} trades"
+            f"Capital: {self._fmt_usdt(self.risk_manager.config.capital)}\n"
+            f"Cumulative PnL so far: {self._fmt_usdt(self.cumulative_pnl, signed=True)} over {self.closed_trades} trades"
         )
 
     def _send_stopped_message(self) -> None:
@@ -343,7 +356,7 @@ class LiveRunner:
             self.notifier.send(self._status_message())
         elif command == "/pnl":
             self.notifier.send(self._status_message(prefix="\U0001F4B0 PnL"))
-        elif command == "/trades":
+        elif command in ("/trades", "/openpositions"):
             self.notifier.send(self._open_trades_message())
         elif command == "/price":
             price = self.data_feed.get_latest_price(self.symbol)
