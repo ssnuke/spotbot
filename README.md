@@ -98,3 +98,7 @@ python3 main.py --mode backtest --download-if-missing --start-date 2024-01-01 --
   python3 main.py --mode backtest --download-if-missing --start-date 2026-05-01 --end-date 2026-06-30
 
   python3 main.py --mode backtest --download-if-missing --start-date 2022-01-01 --end-date 2022-12-30
+
+
+  1. update env
+  2. Install 
