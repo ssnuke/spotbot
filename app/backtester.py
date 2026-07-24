@@ -73,6 +73,7 @@ class BacktestConfig:
     max_position_pct: float = 0.1
     max_consecutive_losses: int = 0
     cooldown_period: int = 0
+    min_entry_spacing_ticks: int = 0
     reward_ratio: float = 2.0
     stop_loss_pct: float = 0.01
     take_profit_pct: float = 0.02
@@ -107,6 +108,7 @@ class Backtester:
                 max_position_pct=self.config.max_position_pct,
                 max_consecutive_losses=self.config.max_consecutive_losses,
                 cooldown_period=self.config.cooldown_period,
+                min_entry_spacing_ticks=self.config.min_entry_spacing_ticks,
             )
         )
         self.strategy: BaseStrategy = TAEStrategy(strategy_config)

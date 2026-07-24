@@ -16,6 +16,7 @@ class RiskConfig:
     max_position_pct: float = 0.1
     max_consecutive_losses: int = 0
     cooldown_period: int = 0
+    min_entry_spacing_ticks: int = 0
 
 
 @dataclass
@@ -39,6 +40,8 @@ class RiskManager:
         self.allocated_capital = 0.0
         self.consecutive_losses = 0
         self.cooldown_remaining = 0
+        self.ticks_since_buy_entry = 10**9
+        self.ticks_since_sell_entry = 10**9
 
     def validate_trade(
         self,
@@ -68,15 +71,22 @@ class RiskManager:
             return False
         if self.cooldown_remaining > 0:
             return False
+        if side == "buy" and self.ticks_since_buy_entry < self.config.min_entry_spacing_ticks:
+            return False
+        if side == "sell" and self.ticks_since_sell_entry < self.config.min_entry_spacing_ticks:
+            return False
         return True
 
     def _available_capital(self) -> float:
         return self.config.capital - self.allocated_capital
 
     def tick(self) -> None:
-        """Advance time by one bar/tick, decaying any active loss-streak cooldown."""
+        """Advance time by one bar/tick, decaying any active loss-streak cooldown and
+        advancing the same-side entry-spacing counters."""
         if self.cooldown_remaining > 0:
             self.cooldown_remaining -= 1
+        self.ticks_since_buy_entry = min(self.ticks_since_buy_entry + 1, 10**9)
+        self.ticks_since_sell_entry = min(self.ticks_since_sell_entry + 1, 10**9)
 
     def create_trade_plan(self, entry_price: float, stop_loss_price: float, side: str = "buy") -> TradePlan:
         if not self.validate_trade(entry_price, stop_loss_price, side=side):
@@ -108,6 +118,10 @@ class RiskManager:
 
         self.daily_trades += 1
         self.allocated_capital += notional
+        if side == "buy":
+            self.ticks_since_buy_entry = 0
+        else:
+            self.ticks_since_sell_entry = 0
         return TradePlan(
             side=side,
             entry_price=entry_price,

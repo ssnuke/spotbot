@@ -9,7 +9,8 @@
     "max_open_positions": 3,
     "max_position_pct": 0.1,
     "max_consecutive_losses": 3,
-    "cooldown_period": 12
+    "cooldown_period": 12,
+    "min_entry_spacing_ticks": 0
   },
   "backtest": {
     "start_capital": 50000.0,
@@ -21,6 +22,7 @@
     "max_position_pct": 0.1,
     "max_consecutive_losses": 3,
     "cooldown_period": 12,
+    "min_entry_spacing_ticks": 0,
     "reward_ratio": 2.0,
     "stop_loss_pct": 0.01,
     "take_profit_pct": 0.03,

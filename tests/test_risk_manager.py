@@ -88,3 +88,29 @@ def test_consecutive_loss_streak_reset_by_a_win():
     assert manager.consecutive_losses == 1
     assert manager.cooldown_remaining == 0
     assert manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)
+
+
+def test_same_side_entry_blocked_within_min_spacing():
+    manager = RiskManager(
+        RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_open_positions=10, min_entry_spacing_ticks=3)
+    )
+    manager.create_trade_plan(entry_price=100.0, stop_loss_price=95.0, side="buy")
+
+    assert not manager.validate_trade(entry_price=101.0, stop_loss_price=96.0, side="buy")
+
+    manager.tick()
+    manager.tick()
+    assert not manager.validate_trade(entry_price=101.0, stop_loss_price=96.0, side="buy")  # 1 tick short
+
+    manager.tick()
+    assert manager.validate_trade(entry_price=101.0, stop_loss_price=96.0, side="buy")
+
+
+def test_min_entry_spacing_only_applies_to_the_same_side():
+    manager = RiskManager(
+        RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_open_positions=10, min_entry_spacing_ticks=3)
+    )
+    manager.create_trade_plan(entry_price=100.0, stop_loss_price=95.0, side="buy")
+
+    # Opposite side is unaffected by the buy-side spacing timer.
+    assert manager.validate_trade(entry_price=100.0, stop_loss_price=105.0, side="sell")

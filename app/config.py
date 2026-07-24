@@ -21,6 +21,7 @@ class RiskConfigData:
     max_position_pct: float = 0.1
     max_consecutive_losses: int = 0
     cooldown_period: int = 0
+    min_entry_spacing_ticks: int = 0
 
 
 @dataclass
@@ -34,6 +35,7 @@ class BacktestConfigData:
     max_position_pct: float = 0.1
     max_consecutive_losses: int = 0
     cooldown_period: int = 0
+    min_entry_spacing_ticks: int = 0
     reward_ratio: float = 2.0
     stop_loss_pct: float = 0.01
     take_profit_pct: float = 0.02
