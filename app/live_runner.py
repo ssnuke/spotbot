@@ -130,6 +130,19 @@ class LiveRunner:
         self.winning_trades = state.get("winning_trades", 0) or 0
         self.losing_trades = state.get("losing_trades", 0) or 0
 
+        # If capital was lowered in config while trades opened under a larger capital
+        # are still open, the persisted allocation can exceed the new capital, making
+        # available capital permanently negative and blocking all new trades. Clamp it
+        # so the account self-heals as those positions close naturally.
+        if self.risk_manager.allocated_capital > self.risk_manager.config.capital:
+            self._log(
+                f"WARNING: persisted allocated_capital ({self.risk_manager.allocated_capital:.2f}) exceeds "
+                f"configured capital ({self.risk_manager.config.capital:.2f}) — capital was likely reduced "
+                "while positions were open. Clamping so new trades aren't permanently blocked."
+            )
+            self.risk_manager.allocated_capital = self.risk_manager.config.capital
+            self._save_risk_state()
+
     def _save_risk_state(self) -> None:
         self.store.save_risk_state(
             self.risk_manager,

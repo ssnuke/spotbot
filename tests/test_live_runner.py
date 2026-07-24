@@ -1,6 +1,6 @@
 from app.live_runner import LiveRunner
 from app.order_executor import SimulatedOrderExecutor
-from app.risk_manager import RiskConfig
+from app.risk_manager import RiskConfig, RiskManager
 from app.state_store import StateStore
 from app.telemetry import Telemetry
 
@@ -214,3 +214,23 @@ def test_status_message_omits_inr_when_rate_unavailable():
 
     assert "≈" not in message
     assert "USDT" in message
+
+
+def test_reduced_capital_with_open_positions_does_not_permanently_block_new_trades():
+    # Simulate 3 positions opened under a $50k capital (10% cap = $5k notional each),
+    # then the operator lowering capital to $300 in config while those stay open.
+    store = StateStore(":memory:")
+    old_risk_config = RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_position_pct=0.1)
+    persisted_manager = RiskManager(old_risk_config)
+    persisted_manager.allocated_capital = 15000.0
+    persisted_manager.open_positions = 3
+    store.save_risk_state(persisted_manager, current_day="2026-07-23")
+
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        store=store,
+        risk_config=RiskConfig(capital=300, risk_per_trade_pct=0.005, max_position_pct=0.1),
+    )
+
+    assert runner.risk_manager.allocated_capital == 300.0
+    assert runner.risk_manager._available_capital() == 0.0
