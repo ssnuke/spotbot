@@ -1,0 +1,252 @@
+====================================================================================================
+LARGE-SCALE BACKTEST REPORT — BTC/USDT, 2023-2025, current shipped config
+====================================================================================================
+
+Config snapshot (as of this test): min_signal_score=0.60, partial_exit_qty_pct=0.25,
+fixed stop_loss_pct=0.01 / take_profit_pct=0.03 (use_atr_stop=False), trailing_stop_pct=0.005,
+max_consecutive_losses=3 / cooldown_period=12 ticks, max_position_pct=0.1,
+risk_per_trade_pct=0.003, trade_fee_pct=0.0005, slippage_pct=0.0005, start_capital=$50,000
+
+Windows are NON-OVERLAPPING, starting Jan 1 of each year. Trailing partial windows
+(< 90% of expected candle count) are discarded so every row is a genuinely full-length window.
+
+
+====================================================================================================
+YEAR 2023
+====================================================================================================
+
+--- 30-day windows (12) ---
+  # | Start      | End        | Trades |   Win% |  Return% |  MaxDD% |    PF |  Sharpe |   TP% | Trail%
+-------------------------------------------------------------------------------------------------------
+  1 | 2023-01-01 | 2023-01-31 |    236 |  59.7% |   11.30% |   1.95% |  2.08 |   0.326 | 25.4% |  74.6%
+  2 | 2023-01-31 | 2023-03-02 |    240 |  62.5% |    8.55% |   1.68% |  1.86 |   0.275 | 18.3% |  81.7%
+  3 | 2023-03-02 | 2023-04-01 |    240 |  51.7% |    2.39% |   2.95% |  1.19 |   0.077 | 14.6% |  85.4%
+  4 | 2023-04-01 | 2023-05-01 |    240 |  53.8% |    5.37% |   3.34% |  1.44 |   0.164 | 18.8% |  79.6%
+  5 | 2023-05-01 | 2023-05-31 |    240 |  57.1% |    5.56% |   3.39% |  1.50 |   0.181 | 15.8% |  82.9%
+  6 | 2023-05-31 | 2023-06-30 |    240 |  55.8% |    5.49% |   2.27% |  1.47 |   0.170 | 18.3% |  80.8%
+  7 | 2023-06-30 | 2023-07-30 |    237 |  59.1% |    0.37% |   1.47% |  1.04 |   0.016 |  3.8% |  91.6%
+  8 | 2023-07-30 | 2023-08-29 |    218 |  46.3% |    1.22% |   3.04% |  1.10 |   0.041 | 16.1% |  72.5%
+  9 | 2023-08-29 | 2023-09-28 |    235 |  59.6% |    4.23% |   1.27% |  1.40 |   0.149 | 11.5% |  88.5%
+ 10 | 2023-09-28 | 2023-10-28 |    240 |  61.3% |    9.60% |   1.64% |  1.94 |   0.289 | 20.8% |  78.8%
+ 11 | 2023-10-28 | 2023-11-27 |    240 |  72.1% |    8.42% |   1.53% |  2.14 |   0.339 |  8.8% |  85.8%
+ 12 | 2023-11-27 | 2023-12-27 |    240 |  72.5% |   15.39% |   1.07% |  3.12 |   0.500 | 24.6% |  75.4%
+    -> avg return=6.49%  median=5.53%  min=0.37%  max=15.39%  stdev=4.19  negative windows=0/12
+    -> avg win_rate=59.3%  avg max_dd=2.13%  avg PF=1.69
+
+--- 90-day windows (4) ---
+  # | Start      | End        | Trades |   Win% |  Return% |  MaxDD% |    PF |  Sharpe |   TP% | Trail%
+-------------------------------------------------------------------------------------------------------
+  1 | 2023-01-01 | 2023-04-01 |    716 |  58.5% |   22.93% |   2.52% |  1.70 |   0.235 | 19.4% |  80.6%
+  2 | 2023-04-01 | 2023-06-30 |    720 |  55.7% |   15.23% |   3.34% |  1.43 |   0.161 | 16.9% |  82.8%
+  3 | 2023-06-30 | 2023-09-28 |    691 |  55.0% |    7.07% |   4.84% |  1.21 |   0.082 | 12.0% |  88.0%
+  4 | 2023-09-28 | 2023-12-27 |    720 |  69.0% |   34.66% |   1.64% |  2.41 |   0.382 | 19.2% |  80.8%
+    -> avg return=19.97%  median=19.08%  min=7.07%  max=34.66%  stdev=10.17  negative windows=0/4
+    -> avg win_rate=59.6%  avg max_dd=3.08%  avg PF=1.69
+
+--- 180-day windows (2) ---
+  # | Start      | End        | Trades |   Win% |  Return% |  MaxDD% |    PF |  Sharpe |   TP% | Trail%
+-------------------------------------------------------------------------------------------------------
+  1 | 2023-01-01 | 2023-06-30 |   1436 |  57.5% |   39.03% |   2.73% |  1.58 |   0.203 | 18.2% |  81.7%
+  2 | 2023-06-30 | 2023-12-27 |   1411 |  62.2% |   41.35% |   4.84% |  1.70 |   0.231 | 15.5% |  84.5%
+    -> avg return=40.19%  median=40.19%  min=39.03%  max=41.35%  stdev=1.16  negative windows=0/2
+    -> avg win_rate=59.8%  avg max_dd=3.78%  avg PF=1.64
+
+--- 365-day windows (1) ---
+  # | Start      | End        | Trades |   Win% |  Return% |  MaxDD% |    PF |  Sharpe |   TP% | Trail%
+-------------------------------------------------------------------------------------------------------
+  1 | 2023-01-01 | 2023-12-30 |   2871 |  59.9% |   82.17% |   3.49% |  1.65 |   0.219 | 17.0% |  83.0%
+    -> avg return=82.17%  median=82.17%  min=82.17%  max=82.17%  stdev=0.00  negative windows=0/1
+    -> avg win_rate=59.9%  avg max_dd=3.49%  avg PF=1.65
+
+====================================================================================================
+YEAR 2024
+====================================================================================================
+
+--- 30-day windows (12) ---
+  # | Start      | End        | Trades |   Win% |  Return% |  MaxDD% |    PF |  Sharpe |   TP% | Trail%
+-------------------------------------------------------------------------------------------------------
+  1 | 2024-01-01 | 2024-01-31 |    240 |  52.1% |   -0.16% |   2.33% |  0.99 |  -0.006 |  8.3% |  91.7%
+  2 | 2024-01-31 | 2024-03-01 |    240 |  62.5% |    5.77% |   2.39% |  1.58 |   0.201 | 13.8% |  86.2%
+  3 | 2024-03-01 | 2024-03-31 |    240 |  58.3% |    4.91% |   1.46% |  1.45 |   0.162 | 15.4% |  81.2%
+  4 | 2024-03-31 | 2024-04-30 |    240 |  51.7% |    1.42% |   2.39% |  1.11 |   0.047 | 12.9% |  87.1%
+  5 | 2024-04-30 | 2024-05-30 |    240 |  57.9% |    2.98% |   2.58% |  1.27 |   0.106 | 10.4% |  89.6%
+  6 | 2024-05-30 | 2024-06-29 |    240 |  60.0% |    8.02% |   3.01% |  1.76 |   0.249 | 20.4% |  77.5%
+  7 | 2024-06-29 | 2024-07-29 |    240 |  60.0% |    6.94% |   1.30% |  1.66 |   0.224 | 16.7% |  83.3%
+  8 | 2024-07-29 | 2024-08-28 |    240 |  60.0% |    5.92% |   2.29% |  1.56 |   0.196 | 15.0% |  83.3%
+  9 | 2024-08-28 | 2024-09-27 |    240 |  46.7% |   -2.57% |   4.59% |  0.82 |  -0.092 |  8.3% |  91.7%
+ 10 | 2024-09-27 | 2024-10-27 |    240 |  60.4% |    8.29% |   2.42% |  1.79 |   0.258 | 20.8% |  79.2%
+ 11 | 2024-10-27 | 2024-11-26 |    240 |  60.4% |    5.63% |   3.29% |  1.54 |   0.190 | 15.0% |  85.0%
+ 12 | 2024-11-26 | 2024-12-26 |    240 |  60.8% |    5.16% |   2.19% |  1.50 |   0.177 | 13.8% |  86.2%
+    -> avg return=4.36%  median=5.39%  min=-2.57%  max=8.29%  stdev=3.18  negative windows=2/12
+    -> avg win_rate=57.6%  avg max_dd=2.52%  avg PF=1.42
+
+--- 90-day windows (4) ---
+  # | Start      | End        | Trades |   Win% |  Return% |  MaxDD% |    PF |  Sharpe |   TP% | Trail%
+-------------------------------------------------------------------------------------------------------
+  1 | 2024-01-01 | 2024-03-31 |    720 |  57.6% |   10.46% |   2.40% |  1.31 |   0.120 | 12.5% |  86.4%
+  2 | 2024-03-31 | 2024-06-29 |    720 |  55.3% |   10.92% |   5.46% |  1.31 |   0.120 | 14.6% |  84.7%
+  3 | 2024-06-29 | 2024-09-27 |    720 |  55.6% |   10.04% |   4.09% |  1.29 |   0.112 | 13.5% |  86.5%
+  4 | 2024-09-27 | 2024-12-26 |    720 |  61.0% |   19.03% |   3.06% |  1.62 |   0.211 | 16.1% |  83.9%
+    -> avg return=12.61%  median=10.69%  min=10.04%  max=19.03%  stdev=3.72  negative windows=0/4
+    -> avg win_rate=57.4%  avg max_dd=3.75%  avg PF=1.38
+
+--- 180-day windows (2) ---
+  # | Start      | End        | Trades |   Win% |  Return% |  MaxDD% |    PF |  Sharpe |   TP% | Trail%
+-------------------------------------------------------------------------------------------------------
+  1 | 2024-01-01 | 2024-06-29 |   1440 |  56.4% |   21.58% |   4.96% |  1.31 |   0.121 | 13.5% |  86.1%
+  2 | 2024-06-29 | 2024-12-26 |   1440 |  58.0% |   28.42% |   4.76% |  1.43 |   0.157 | 14.8% |  85.2%
+    -> avg return=25.00%  median=25.00%  min=21.58%  max=28.42%  stdev=3.42  negative windows=0/2
+    -> avg win_rate=57.2%  avg max_dd=4.86%  avg PF=1.37
+
+--- 365-day windows (1) ---
+  # | Start      | End        | Trades |   Win% |  Return% |  MaxDD% |    PF |  Sharpe |   TP% | Trail%
+-------------------------------------------------------------------------------------------------------
+  1 | 2024-01-01 | 2024-12-30 |   2913 |  56.6% |   46.36% |   4.96% |  1.33 |   0.128 | 13.9% |  85.9%
+    -> avg return=46.36%  median=46.36%  min=46.36%  max=46.36%  stdev=0.00  negative windows=0/1
+    -> avg win_rate=56.6%  avg max_dd=4.96%  avg PF=1.33
+
+====================================================================================================
+YEAR 2025
+====================================================================================================
+
+--- 30-day windows (12) ---
+  # | Start      | End        | Trades |   Win% |  Return% |  MaxDD% |    PF |  Sharpe |   TP% | Trail%
+-------------------------------------------------------------------------------------------------------
+  1 | 2025-01-01 | 2025-01-31 |    240 |  67.1% |   13.85% |   1.11% |  2.59 |   0.417 | 27.5% |  71.2%
+  2 | 2025-01-31 | 2025-03-02 |    240 |  58.8% |    3.71% |   4.03% |  1.34 |   0.130 | 12.5% |  87.5%
+  3 | 2025-03-02 | 2025-04-01 |    240 |  52.9% |    1.19% |   2.15% |  1.10 |   0.041 | 12.1% |  87.9%
+  4 | 2025-04-01 | 2025-05-01 |    240 |  55.4% |    1.53% |   2.92% |  1.13 |   0.054 | 10.0% |  90.0%
+  5 | 2025-05-01 | 2025-05-31 |    240 |  62.9% |    7.31% |   2.15% |  1.75 |   0.244 | 17.1% |  82.5%
+  6 | 2025-05-31 | 2025-06-30 |    240 |  55.4% |    3.70% |   1.76% |  1.33 |   0.123 | 15.4% |  80.8%
+  7 | 2025-06-30 | 2025-07-30 |    240 |  51.7% |    2.03% |   4.83% |  1.16 |   0.066 | 14.6% |  82.9%
+  8 | 2025-07-30 | 2025-08-29 |    240 |  58.8% |    4.00% |   2.53% |  1.37 |   0.138 | 12.9% |  87.1%
+  9 | 2025-08-29 | 2025-09-28 |    240 |  53.8% |    4.03% |   2.17% |  1.37 |   0.134 | 15.8% |  77.9%
+ 10 | 2025-09-28 | 2025-10-28 |    240 |  65.4% |    8.90% |   3.02% |  1.97 |   0.298 | 17.5% |  82.5%
+ 11 | 2025-10-28 | 2025-11-27 |    240 |  51.2% |    0.59% |   2.93% |  1.05 |   0.020 | 12.9% |  87.1%
+ 12 | 2025-11-27 | 2025-12-27 |    240 |  60.8% |    3.09% |   2.20% |  1.30 |   0.118 |  7.9% |  92.1%
+    -> avg return=4.50%  median=3.71%  min=0.59%  max=13.85%  stdev=3.65  negative windows=0/12
+    -> avg win_rate=57.8%  avg max_dd=2.65%  avg PF=1.45
+
+--- 90-day windows (4) ---
+  # | Start      | End        | Trades |   Win% |  Return% |  MaxDD% |    PF |  Sharpe |   TP% | Trail%
+-------------------------------------------------------------------------------------------------------
+  1 | 2025-01-01 | 2025-04-01 |    720 |  59.7% |   18.20% |   3.60% |  1.57 |   0.198 | 17.1% |  82.9%
+  2 | 2025-04-01 | 2025-06-30 |    720 |  58.3% |   13.05% |   2.92% |  1.40 |   0.148 | 14.2% |  84.6%
+  3 | 2025-06-30 | 2025-09-28 |    720 |  55.0% |   10.67% |   4.83% |  1.31 |   0.118 | 14.9% |  83.1%
+  4 | 2025-09-28 | 2025-12-27 |    720 |  59.6% |   13.07% |   3.07% |  1.41 |   0.152 | 12.8% |  87.2%
+    -> avg return=13.75%  median=13.06%  min=10.67%  max=18.20%  stdev=2.75  negative windows=0/4
+    -> avg win_rate=58.2%  avg max_dd=3.61%  avg PF=1.42
+
+--- 180-day windows (2) ---
+  # | Start      | End        | Trades |   Win% |  Return% |  MaxDD% |    PF |  Sharpe |   TP% | Trail%
+-------------------------------------------------------------------------------------------------------
+  1 | 2025-01-01 | 2025-06-30 |   1440 |  59.0% |   31.26% |   3.80% |  1.49 |   0.173 | 15.6% |  83.8%
+  2 | 2025-06-30 | 2025-12-27 |   1440 |  57.4% |   23.40% |   4.83% |  1.35 |   0.131 | 14.0% |  86.0%
+    -> avg return=27.33%  median=27.33%  min=23.40%  max=31.26%  stdev=3.93  negative windows=0/2
+    -> avg win_rate=58.2%  avg max_dd=4.32%  avg PF=1.42
+
+--- 365-day windows (1) ---
+  # | Start      | End        | Trades |   Win% |  Return% |  MaxDD% |    PF |  Sharpe |   TP% | Trail%
+-------------------------------------------------------------------------------------------------------
+  1 | 2025-01-01 | 2025-12-30 |   2904 |  58.5% |   56.89% |   3.80% |  1.43 |   0.157 | 15.0% |  85.0%
+    -> avg return=56.89%  median=56.89%  min=56.89%  max=56.89%  stdev=0.00  negative windows=0/1
+    -> avg win_rate=58.5%  avg max_dd=3.80%  avg PF=1.43
+
+====================================================================================================
+CROSS-YEAR SUMMARY BY WINDOW SIZE (all years combined)
+====================================================================================================
+
+30-day windows, n=36:
+  Return%:  avg=5.11  median=5.03  min=-2.57  max=15.39  stdev=3.82
+  Win rate: avg=58.2%  min=46.3%  max=72.5%
+  Max DD:   avg=2.43%  worst=4.83%
+  Profit factor: avg=1.52  min=0.82
+  Negative-return windows: 2/36 (6%)
+
+90-day windows, n=12:
+  Return%:  avg=15.45  median=13.06  min=7.07  max=34.66  stdev=7.21
+  Win rate: avg=58.4%  min=55.0%  max=69.0%
+  Max DD:   avg=3.48%  worst=5.46%
+  Profit factor: avg=1.50  min=1.21
+  Negative-return windows: 0/12 (0%)
+
+180-day windows, n=6:
+  Return%:  avg=30.84  median=29.84  min=21.58  max=41.35  stdev=7.36
+  Win rate: avg=58.4%  min=56.4%  max=62.2%
+  Max DD:   avg=4.32%  worst=4.96%
+  Profit factor: avg=1.48  min=1.31
+  Negative-return windows: 0/6 (0%)
+
+365-day windows, n=3:
+  Return%:  avg=61.81  median=56.89  min=46.36  max=82.17  stdev=15.03
+  Win rate: avg=58.3%  min=56.6%  max=59.9%
+  Max DD:   avg=4.08%  worst=4.96%
+  Profit factor: avg=1.47  min=1.33
+  Negative-return windows: 0/3 (0%)
+
+====================================================================================================
+NOTABLE WINDOWS (30-day granularity — most sensitive to short bad patches)
+====================================================================================================
+
+Worst 8 (by return%):
+  2024 2024-08-28..2024-09-27: ret=-2.57% win=46.7% dd=4.59% pf=0.82 trades=240
+  2024 2024-01-01..2024-01-31: ret=-0.16% win=52.1% dd=2.33% pf=0.99 trades=240
+  2023 2023-06-30..2023-07-30: ret=0.37% win=59.1% dd=1.47% pf=1.04 trades=237
+  2025 2025-10-28..2025-11-27: ret=0.59% win=51.2% dd=2.93% pf=1.05 trades=240
+  2025 2025-03-02..2025-04-01: ret=1.19% win=52.9% dd=2.15% pf=1.10 trades=240
+  2023 2023-07-30..2023-08-29: ret=1.22% win=46.3% dd=3.04% pf=1.10 trades=218
+  2024 2024-03-31..2024-04-30: ret=1.42% win=51.7% dd=2.39% pf=1.11 trades=240
+  2025 2025-04-01..2025-05-01: ret=1.53% win=55.4% dd=2.92% pf=1.13 trades=240
+
+Best 8 (by return%):
+  2023 2023-11-27..2023-12-27: ret=15.39% win=72.5% dd=1.07% pf=3.12 trades=240
+  2025 2025-01-01..2025-01-31: ret=13.85% win=67.1% dd=1.11% pf=2.59 trades=240
+  2023 2023-01-01..2023-01-31: ret=11.30% win=59.7% dd=1.95% pf=2.08 trades=236
+  2023 2023-09-28..2023-10-28: ret=9.60% win=61.3% dd=1.64% pf=1.94 trades=240
+  2025 2025-09-28..2025-10-28: ret=8.90% win=65.4% dd=3.02% pf=1.97 trades=240
+  2023 2023-01-31..2023-03-02: ret=8.55% win=62.5% dd=1.68% pf=1.86 trades=240
+  2023 2023-10-28..2023-11-27: ret=8.42% win=72.1% dd=1.53% pf=2.14 trades=240
+  2024 2024-09-27..2024-10-27: ret=8.29% win=60.4% dd=2.42% pf=1.79 trades=240
+====================================================================================================
+KEY FINDINGS
+====================================================================================================
+
+1. WIN RATE AND PROFIT FACTOR ARE STABLE ACROSS TIME-SLICING (strong robustness signal)
+   Average win rate stays in a tight 56.6%-59.9% band whether you look at 30-day, 90-day,
+   180-day, or full-year windows, across all three years. Average profit factor stays in a
+   1.33-1.69 band the same way. This is NOT an artifact of picking a lucky aggregation window
+   -- the edge shows up consistently no matter how the calendar is sliced.
+
+2. NEGATIVE-RETURN WINDOWS ARE RARE AND SELF-CORRECT WITHIN A QUARTER
+   Only 2 of 36 independent 30-day windows were net negative (both in 2024). At 90-day
+   granularity and above, ZERO of the 19 windows across all three years were negative --
+   every quarter-or-longer slice of the last 3 years of BTC data was profitable under the
+   current shipped config. Max drawdown never exceeded 5.46% in any window of any size.
+
+3. THE CLEAREST LEVER: TAKE-PROFIT RATE PREDICTS WINDOW QUALITY (r=0.812)
+   Correlation between a window's take-profit exit rate and its return, across all 36
+   30-day windows: r=0.812 (strong). Bottom-quartile TP-rate windows (avg 9.0% of exits
+   reaching target) averaged only 2.12% return and PF 1.24. Top-quartile TP-rate windows
+   (avg 21.7% reaching target) averaged 9.54% return and PF 2.01 -- more than 4x the return
+   at roughly the same win rate. In other words: the single biggest driver of a good period
+   isn't "more wins," it's "wins that reach the full 3% target instead of getting trailed out
+   early." This points squarely at a TREND-STRENGTH / REGIME FILTER as the next highest-value
+   change: something that detects when price action isn't trending cleanly (visible here as
+   low TP%/high trailing-stop% before the fact would require a live regime signal, not just
+   hindsight) and reduces trading during those stretches, rather than taking the same signal
+   quality regardless of regime.
+
+4. 2024 IS THE WEAK YEAR, AND IT'S CONCENTRATED, NOT SPREAD OUT
+   2024 full-year return (46.36%) trails 2023 (82.17%) and 2025 (56.89%). Both of the only
+   two negative 30-day windows across all 3 years are in 2024 (Jan: -0.16%, Aug-Sep: -2.57%),
+   and both have unusually low TP% (8.3% each, vs the 36-window average of ~16%). This is
+   consistent with earlier findings in this project that choppy/range-bound conditions (not
+   downtrends -- 2022's crash year performed fine) are this strategy's actual weak point.
+
+5. SCOPE LIMITATION: THIS TEST IS BTC/USDT ONLY
+   Multi-year (2023-2025) 5m history was only available for BTC/USDT. The live bot's
+   configured symbol is currently SOL/USDT, which has only been validated on a ~2-month
+   2026 window earlier in this project. This report's robustness conclusions do not
+   automatically transfer to SOL -- if long-horizon confidence on SOL specifically is
+   wanted, that requires pulling multi-year SOL history (availability/liquidity history
+   depth would need to be checked) and re-running an equivalent sweep.
