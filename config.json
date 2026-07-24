@@ -1,6 +1,6 @@
 {
   "risk": {
-    "capital": 50000.0,
+    "capital": 3000.0,
     "risk_per_trade_pct": 0.005,
     "reward_ratio": 2.0,
     "max_daily_loss_pct": 0.01,
@@ -25,7 +25,7 @@
     "stop_loss_pct": 0.01,
     "take_profit_pct": 0.03,
     "partial_exit_profit_pct": 0.01,
-    "partial_exit_qty_pct": 0.5,
+    "partial_exit_qty_pct": 0.25,
     "trailing_stop_pct": 0.005,
     "trade_fee_pct": 0.0005,
     "slippage_pct": 0.0005
@@ -38,7 +38,7 @@
     "reversal_lookback": 2,
     "signal_threshold_pct": 0.001,
     "min_trend_distance_pct": 0.001,
-    "min_signal_score": 0.70
+    "min_signal_score": 0.60
   },
   "live": {
     "timeframe": "5m",
@@ -47,14 +47,14 @@
     "stop_loss_pct": 0.01,
     "take_profit_pct": 0.03,
     "partial_exit_profit_pct": 0.01,
-    "partial_exit_qty_pct": 0.5,
+    "partial_exit_qty_pct": 0.25,
     "trailing_stop_pct": 0.005,
     "db_path": "live_state.db",
     "execution_mode": "simulated",
     "summary_interval_seconds": 3600,
     "command_poll_interval_seconds": 5
   },
-  "symbol": "BTC/USDT",
+  "symbol": "SOL/USDT",
   "csv_path": "historical.csv",
   "download_if_missing": true,
   "download_limit": 1000
