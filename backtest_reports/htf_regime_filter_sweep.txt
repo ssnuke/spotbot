@@ -55,3 +55,27 @@ rejection in git history: rapid same-direction re-entries are a genuine edge, no
 Code is kept (app/regime_filter.py, tested, wired into Backtester behind
 htf_filter_enabled=false) in case faster EMA periods are worth a follow-up test, but not
 recommended for use with the current 9/21 default.
+
+====================================================================================================
+FOLLOW-UP: FASTER EMA PERIODS TESTED (3/8, 4/9, 5/13, 6/15 vs original 9/21) — STILL REJECTED
+====================================================================================================
+
+Hypothesis tested: the 9/21-period lag was causing late/chased entries; faster periods
+should reduce that lag and close the gap to baseline.
+
+Result: hypothesis falsified. Across 44 tested combinations (5 period pairs x 2 modes x
+3 datasets... wait 4 new pairs + 1 reference x 2 modes x 3 datasets = 30, plus baselines):
+
+- On SOL, the ORIGINAL slower 9/21 outperformed every faster variant (14.32% return / 1.93%
+  dd vs 6-10% return / 3.4-4.3% dd for faster periods) -- opposite of the lag hypothesis.
+- On both BTC datasets, no period pair in either mode ever beat plain baseline. Best case
+  (either mode, 4/9 on BTC 2025: 45.97%; 5/13 on BTC 2026: 44.68%) narrowed the gap but
+  never closed it -- baseline still wins by 6-16 percentage points, consistently.
+- "both" mode drawdown got WORSE with faster periods on BTC 2025 (3/8: 9.06% dd, the worst
+  in the entire sweep, vs 9/21's 6.90%).
+
+Conclusion: the lag speed was not the mechanism. The filter structurally removes profitable
+trades (the same rapid same-direction re-entry/pyramiding edge identified via the
+min_entry_spacing_ticks rejection) regardless of how fast or slow the EMA reacts -- tuning
+speed only changes which good trades get cut, not whether they get cut. HTF trend filtering
+is rejected as an approach for this strategy, not just this parameter setting.
