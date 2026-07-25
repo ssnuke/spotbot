@@ -47,6 +47,10 @@ class BacktestConfigData:
     atr_multiplier: float = 2.0
     trade_fee_pct: float = 0.0005
     slippage_pct: float = 0.0005
+    htf_filter_enabled: bool = False
+    htf_filter_mode: str = "both"
+    htf_short_period: int = 9
+    htf_long_period: int = 21
 
 
 @dataclass

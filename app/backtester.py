@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, date
 from typing import List
 
+from app.regime_filter import RegimeFilter, RegimeFilterConfig
 from app.risk_manager import RiskConfig, RiskManager
 from app.strategy import BaseStrategy, MomentumStrategy, TAEStrategy, TAEStrategyConfig
 from app.telemetry import Telemetry
@@ -85,6 +86,10 @@ class BacktestConfig:
     atr_multiplier: float = 2.0
     trade_fee_pct: float = 0.0
     slippage_pct: float = 0.0
+    htf_filter_enabled: bool = False
+    htf_filter_mode: str = "both"
+    htf_short_period: int = 9
+    htf_long_period: int = 21
     telemetry_enabled: bool = True
 
 
@@ -120,6 +125,15 @@ class Backtester:
 
     def run(self, candles: List[List[float]], symbol: str = "BTC/USDT") -> BacktestResult:
         prices = [float(candle[4]) for candle in candles]
+        regime_filter = RegimeFilter(
+            candles,
+            RegimeFilterConfig(
+                enabled=self.config.htf_filter_enabled,
+                mode=self.config.htf_filter_mode,
+                short_period=self.config.htf_short_period,
+                long_period=self.config.htf_long_period,
+            ),
+        )
         result = BacktestResult(final_capital=self.config.start_capital)
         equity = self.config.start_capital
         result.equity_curve.append(equity)
@@ -141,6 +155,10 @@ class Backtester:
             window = prices[: index + 1]
             signal = self.strategy.generate_signal(window, symbol)
             if signal is None:
+                continue
+
+            if not regime_filter.allows(index, signal.side):
+                self._log(f"Signal at candle {index} rejected by higher-timeframe trend filter: side={signal.side}")
                 continue
 
             self._log(

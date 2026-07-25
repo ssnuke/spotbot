@@ -30,7 +30,11 @@
     "partial_exit_qty_pct": 0.25,
     "trailing_stop_pct": 0.005,
     "trade_fee_pct": 0.0005,
-    "slippage_pct": 0.0005
+    "slippage_pct": 0.0005,
+    "htf_filter_enabled": false,
+    "htf_filter_mode": "both",
+    "htf_short_period": 9,
+    "htf_long_period": 21
   },
   "strategy": {
     "short_window": 5,

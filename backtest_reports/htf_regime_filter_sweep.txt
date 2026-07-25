@@ -1,0 +1,57 @@
+====================================================================================================
+HIGHER-TIMEFRAME (1H/4H) TREND FILTER — SWEEP RESULTS AND DECISION: NOT SHIPPED
+====================================================================================================
+
+Motivation: the large_scale_2023_2025.txt report found a strong correlation (r=0.812)
+between a window's take-profit exit rate and its return, suggesting that periods where
+price isn't trending cleanly are where this strategy loses its edge. Built a higher-
+timeframe (1H + 4H) EMA trend filter (9/21 period, calendar-aligned, no lookahead --
+only fully completed HTF bars are used) to gate entries against the higher-timeframe
+trend direction, hypothesizing it would filter out exactly those bad-regime trades.
+
+Modes tested: "both" (require 1H AND 4H agree with signal direction), "4h_only",
+"1h_only", "either" (at least one agrees). Compared against baseline (filter disabled)
+across the same three canonical validation datasets used throughout this project.
+
+RESULTS (Trades / Win% / Return% / MaxDD% / PF):
+
+SOL 2026 May-Jun (480 baseline trades):
+  baseline        : 480 / 59.0% /  8.87% / 2.23% / 1.41
+  HTF both        : 407 / 62.7% / 14.32% / 1.93% / 1.86   <- better on every metric
+  HTF 4h_only     : 456 / 62.7% / 13.58% / 2.44% / 1.73
+  HTF 1h_only     : 475 / 56.0% /  9.12% / 2.65% / 1.40
+  HTF either      : 475 / 59.2% / 10.54% / 2.77% / 1.49
+
+BTC 2025 full year (2904 baseline trades):
+  baseline        : 2904 / 58.8% / 62.04% / 3.79% / 1.47   <- best
+  HTF both        : 2397 / 54.4% / 19.10% / 6.90% / 1.16   <- much worse, dd nearly doubles
+  HTF 4h_only     : 2849 / 56.2% / 39.07% / 8.87% / 1.28
+  HTF 1h_only     : 2887 / 54.8% / 33.51% / 5.97% / 1.23
+  HTF either      : 2895 / 55.9% / 42.76% / 6.65% / 1.30
+
+BTC 2026 Jan-Jul (1625 baseline trades):
+  baseline        : 1625 / 62.1% / 53.03% / 2.22% / 1.78   <- best
+  HTF both        : 1372 / 54.4% / 18.78% / 6.93% / 1.27
+  HTF 4h_only     : 1583 / 52.1% / 15.56% / 8.52% / 1.19   <- worst
+  HTF 1h_only     : 1616 / 57.2% / 36.09% / 4.13% / 1.48
+  HTF either      : 1622 / 57.5% / 37.92% / 6.01% / 1.50
+
+DECISION: NOT SHIPPED. Config default remains htf_filter_enabled=false.
+
+Rationale: the filter is a clean win on the smallest dataset (SOL, 480 trades) but a
+consistent, substantial regression on both large, statistically meaningful BTC full-year
+datasets (2904 and 1625 trades) -- across every mode tested. Drawdown roughly doubles or
+triples on BTC even while trading less, which is the opposite of what a risk-reducing
+regime filter should do. Per this project's own robustness standard (large_scale report
+finding #1: trust results consistent across window/dataset size), a filter that wins on
+the smallest sample and loses badly on the two largest is not trustworthy edge.
+
+Likely mechanism: the 9/21-period HTF EMA is inherently laggy. By the time it confirms a
+trend, the faster 5m TAE signal has often already caught the early, best-priced part of
+the move -- gating on HTF confirmation forces later, worse entries and cuts into the
+pyramiding dynamic already proven beneficial for this strategy (see min_entry_spacing_ticks
+rejection in git history: rapid same-direction re-entries are a genuine edge, not noise).
+
+Code is kept (app/regime_filter.py, tested, wired into Backtester behind
+htf_filter_enabled=false) in case faster EMA periods are worth a follow-up test, but not
+recommended for use with the current 9/21 default.

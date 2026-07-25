@@ -304,6 +304,10 @@ def main() -> None:
             atr_multiplier=config.backtest.atr_multiplier,
             trade_fee_pct=config.backtest.trade_fee_pct,
             slippage_pct=config.backtest.slippage_pct,
+            htf_filter_enabled=config.backtest.htf_filter_enabled,
+            htf_filter_mode=config.backtest.htf_filter_mode,
+            htf_short_period=config.backtest.htf_short_period,
+            htf_long_period=config.backtest.htf_long_period,
         )
         telemetry = Telemetry(enabled=True, logger=print if args.verbose else None)
         backtester = Backtester(config=backtest_config, strategy_config=strategy_config, telemetry=telemetry)
