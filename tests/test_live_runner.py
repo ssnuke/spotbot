@@ -140,6 +140,50 @@ def test_unknown_command_gets_a_helpful_reply():
     assert "Unknown command" in notifier.sent[0]
 
 
+def test_pause_blocks_new_entries_but_resume_reallows_them():
+    # Strong sustained uptrend so TAEStrategy fires a buy signal on the last candle.
+    closes = [100.0 + i * 0.5 for i in range(60)]
+    runner = _make_runner(_make_candles(closes))
+
+    runner._handle_command("/pause")
+    assert runner._trading_paused is True
+    runner.run_once()
+    assert runner.risk_manager.open_positions == 0
+    assert runner.store.list_open_trades() == []
+
+    runner._handle_command("/resume")
+    assert runner._trading_paused is False
+    runner._last_candle_open_time = None  # force the candle to be treated as "new" again
+    runner.run_once()
+    assert runner.risk_manager.open_positions == 1
+
+
+def test_pause_does_not_stop_managing_existing_open_trades():
+    uptrend = [100.0 + i * 0.5 for i in range(60)]
+    data_feed = FakeDataFeed(_make_candles(uptrend + [uptrend[-1]]))
+    runner = _make_runner(candles=[], data_feed=data_feed)
+    runner.run_once()
+    assert runner.risk_manager.open_positions == 1
+
+    runner._handle_command("/pause")
+    data_feed.candles = _make_candles(uptrend + [50.0, 50.0])  # crash below stop-loss
+    runner.run_once()
+
+    assert runner.risk_manager.open_positions == 0  # still closed despite being paused
+    assert runner.store.list_open_trades() == []
+
+
+def test_kill_command_requests_stop():
+    notifier = FakeNotifier()
+    runner = _make_runner(_make_candles([100.0] * 5), notifier=notifier)
+    assert runner._stop_requested is False
+
+    runner._handle_command("/kill")
+
+    assert runner._stop_requested is True
+    assert any("Kill switch" in msg for msg in notifier.sent)
+
+
 def test_price_command_uses_data_feed_latest_price():
     notifier = FakeNotifier()
     data_feed = FakeDataFeed(_make_candles([100.0] * 5), latest_price=12345.67)
@@ -234,3 +278,23 @@ def test_reduced_capital_with_open_positions_does_not_permanently_block_new_trad
 
     assert runner.risk_manager.allocated_capital == 300.0
     assert runner.risk_manager._available_capital() == 0.0
+
+
+def test_restore_state_reloads_equity_and_peak_equity():
+    store = StateStore(":memory:")
+    old_risk_config = RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_drawdown_pct=0.05)
+    persisted_manager = RiskManager(old_risk_config)
+    persisted_manager.equity = 46000.0
+    persisted_manager.peak_equity = 52000.0
+    store.save_risk_state(persisted_manager, current_day="2026-07-23")
+
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        store=store,
+        risk_config=RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_drawdown_pct=0.05),
+    )
+
+    assert runner.risk_manager.equity == 46000.0
+    assert runner.risk_manager.peak_equity == 52000.0
+    # (52000 - 46000) / 52000 ~= 11.5% drawdown, over the 5% limit -> new trades blocked
+    assert not runner.risk_manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)

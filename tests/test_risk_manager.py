@@ -19,6 +19,29 @@ def test_trade_rejected_when_daily_loss_limit_reached():
     assert not manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)
 
 
+def test_trade_rejected_when_max_drawdown_exceeded():
+    manager = RiskManager(RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_drawdown_pct=0.05))
+    manager.peak_equity = 50000.0
+    manager.equity = 47000.0  # 6% drawdown from peak, over the 5% limit
+    assert not manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)
+
+
+def test_trade_allowed_when_drawdown_under_limit():
+    manager = RiskManager(RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_drawdown_pct=0.05))
+    manager.peak_equity = 50000.0
+    manager.equity = 48000.0  # 4% drawdown, under the 5% limit
+    assert manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)
+
+
+def test_peak_equity_tracks_new_highs_and_drawdown_is_measured_from_peak():
+    manager = RiskManager(RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_drawdown_pct=0.05))
+    manager.register_trade_result(pnl=10000.0, notional=0.0)  # equity now 60000, new peak
+    assert manager.peak_equity == 60000.0
+
+    manager.register_trade_result(pnl=-3500.0, notional=0.0)  # equity 56500, ~5.83% off peak
+    assert not manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)
+
+
 def test_position_size_capped_by_max_position_pct():
     # risk sizing alone would want 10000/1.0 = 10000 units (notional 1,000,000 on 50k capital);
     # the notional cap should clamp this down to max_position_pct of capital instead.

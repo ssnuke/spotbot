@@ -23,6 +23,9 @@ HELP_TEXT = (
     "/pnl - cumulative PnL and trade counts\n"
     "/trades or /openpositions - list currently open trades\n"
     "/price - current market price\n"
+    "/pause - stop opening new positions (existing ones still managed)\n"
+    "/resume - resume opening new positions after a /pause\n"
+    "/kill or /stop - shut the bot down remotely (graceful, sends a final summary)\n"
     "/help - show this message"
 )
 
@@ -101,6 +104,7 @@ class LiveRunner:
         self._last_candle_open_time: Optional[int] = None
         self._update_offset: Optional[int] = None
         self._stop_requested = False
+        self._trading_paused = False
 
     def _log(self, message: str) -> None:
         self.telemetry.log(message)
@@ -129,6 +133,10 @@ class LiveRunner:
         self.closed_trades = state.get("closed_trades", 0) or 0
         self.winning_trades = state.get("winning_trades", 0) or 0
         self.losing_trades = state.get("losing_trades", 0) or 0
+        if state.get("equity") is not None:
+            self.risk_manager.equity = state["equity"]
+        if state.get("peak_equity") is not None:
+            self.risk_manager.peak_equity = state["peak_equity"]
 
         # If capital was lowered in config while trades opened under a larger capital
         # are still open, the persisted allocation can exceed the new capital, making
@@ -374,6 +382,18 @@ class LiveRunner:
         elif command == "/price":
             price = self.data_feed.get_latest_price(self.symbol)
             self.notifier.send(f"{self.symbol}: {price:.2f}" if price is not None else "Price unavailable right now.")
+        elif command == "/pause":
+            self._trading_paused = True
+            self.notifier.send(
+                "⏸ Trading paused. Existing positions are still monitored and will "
+                "exit normally; no new positions will open until /resume."
+            )
+        elif command == "/resume":
+            self._trading_paused = False
+            self.notifier.send("▶️ Trading resumed. New signals can open positions again.")
+        elif command in ("/kill", "/stop"):
+            self._stop_requested = True
+            self.notifier.send("\U0001F6D1 Kill switch received. Shutting down...")
         elif command:
             self.notifier.send("Unknown command. Send /help to see what I understand.")
 
@@ -408,6 +428,9 @@ class LiveRunner:
         if last_open_time == self._last_candle_open_time:
             return  # no new closed candle since last check
         self._last_candle_open_time = last_open_time
+
+        if self._trading_paused:
+            return  # existing positions above are still managed; just no new entries
 
         if self.risk_manager.open_positions >= self.risk_manager.config.max_open_positions:
             return

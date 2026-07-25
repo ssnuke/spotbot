@@ -163,17 +163,24 @@ hourly), the bot listens for commands sent to it in your configured chat:
 
 - `/status` — open positions, cumulative PnL, win/loss counts, cooldown state
 - `/pnl` — same summary, framed as a PnL check
-- `/trades` — details of any currently open trade(s)
+- `/trades` or `/openpositions` — details of any currently open trade(s)
 - `/price` — current market price for the configured symbol
+- `/pause` — stop opening new positions; existing ones are still monitored and will
+  exit normally (stop-loss/take-profit/trailing-stop keep working while paused)
+- `/resume` — resume opening new positions after a `/pause`
+- `/kill` or `/stop` — remote kill switch: shuts the bot down gracefully (same
+  clean-shutdown path as `systemctl stop`/SIGTERM) without needing SSH access
 - `/help` — lists all commands
 
 Only messages from the `TELEGRAM_CHAT_ID` configured in `.env` get a reply —
 commands from any other chat are silently ignored.
 
-Sending `systemctl stop`, `Ctrl+C`, or any signal that terminates the process
-(SIGTERM/SIGINT) triggers a graceful shutdown: the bot finishes its current
-loop iteration, sends a final "Bot stopped" summary to Telegram, and exits
-within a few seconds — it does not need to wait out a full poll interval.
+Sending `systemctl stop`, `Ctrl+C`, any signal that terminates the process
+(SIGTERM/SIGINT), or the `/kill`/`/stop` Telegram command all trigger the same
+graceful shutdown: the bot finishes its current loop iteration, sends a final
+"Bot stopped" summary to Telegram, and exits within a few seconds — it does not
+need to wait out a full poll interval. `/kill` is the one that works from your
+phone without needing terminal access to the server.
 
 ## 11. Common operations
 

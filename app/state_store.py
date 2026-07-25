@@ -56,6 +56,8 @@ class StateStore:
             "closed_trades": "ALTER TABLE risk_state ADD COLUMN closed_trades INTEGER DEFAULT 0",
             "winning_trades": "ALTER TABLE risk_state ADD COLUMN winning_trades INTEGER DEFAULT 0",
             "losing_trades": "ALTER TABLE risk_state ADD COLUMN losing_trades INTEGER DEFAULT 0",
+            "equity": "ALTER TABLE risk_state ADD COLUMN equity REAL",
+            "peak_equity": "ALTER TABLE risk_state ADD COLUMN peak_equity REAL",
         }
         for column, ddl in migrations.items():
             if column not in existing:
@@ -74,15 +76,16 @@ class StateStore:
         self.conn.execute(
             """INSERT INTO risk_state (id, daily_loss, daily_trades, open_positions, allocated_capital,
                 consecutive_losses, cooldown_remaining, current_day, cumulative_pnl, closed_trades,
-                winning_trades, losing_trades)
-               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                winning_trades, losing_trades, equity, peak_equity)
+               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                 daily_loss=excluded.daily_loss, daily_trades=excluded.daily_trades,
                 open_positions=excluded.open_positions, allocated_capital=excluded.allocated_capital,
                 consecutive_losses=excluded.consecutive_losses, cooldown_remaining=excluded.cooldown_remaining,
                 current_day=excluded.current_day, cumulative_pnl=excluded.cumulative_pnl,
                 closed_trades=excluded.closed_trades, winning_trades=excluded.winning_trades,
-                losing_trades=excluded.losing_trades""",
+                losing_trades=excluded.losing_trades, equity=excluded.equity,
+                peak_equity=excluded.peak_equity""",
             (
                 risk_manager.daily_loss,
                 risk_manager.daily_trades,
@@ -95,6 +98,8 @@ class StateStore:
                 closed_trades,
                 winning_trades,
                 losing_trades,
+                risk_manager.equity,
+                risk_manager.peak_equity,
             ),
         )
         self.conn.commit()

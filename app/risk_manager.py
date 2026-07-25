@@ -42,6 +42,8 @@ class RiskManager:
         self.cooldown_remaining = 0
         self.ticks_since_buy_entry = 10**9
         self.ticks_since_sell_entry = 10**9
+        self.equity = config.capital
+        self.peak_equity = config.capital
 
     def validate_trade(
         self,
@@ -58,6 +60,8 @@ class RiskManager:
         if self.open_positions >= self.config.max_open_positions:
             return False
         if self._daily_loss_exceeded():
+            return False
+        if self._max_drawdown_exceeded():
             return False
         if current_price is not None and current_price <= 0:
             return False
@@ -138,6 +142,10 @@ class RiskManager:
         self.open_positions = max(0, self.open_positions - 1)
         self.allocated_capital = max(0.0, self.allocated_capital - notional)
 
+        self.equity += pnl
+        if self.equity > self.peak_equity:
+            self.peak_equity = self.equity
+
         if pnl < 0:
             self.consecutive_losses += 1
         else:
@@ -154,3 +162,9 @@ class RiskManager:
     def _daily_loss_exceeded(self) -> bool:
         max_daily_loss = self.config.capital * self.config.max_daily_loss_pct
         return self.daily_loss >= max_daily_loss
+
+    def _max_drawdown_exceeded(self) -> bool:
+        if self.peak_equity <= 0:
+            return False
+        drawdown = (self.peak_equity - self.equity) / self.peak_equity
+        return drawdown >= self.config.max_drawdown_pct
