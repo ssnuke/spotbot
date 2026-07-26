@@ -386,7 +386,7 @@ class LiveRunner:
         for trade in open_trades:
             lines.append(
                 f"{trade.side.upper()} {trade.symbol} qty={trade.remaining_quantity:.6f} "
-                f"entry={trade.entry_execution_price:.2f} stop={trade.trailing_stop:.2f} "
+                f"entry={trade.entry_execution_price:.2f} trailing_stop={trade.trailing_stop:.2f} "
                 f"target={trade.take_profit:.2f}"
             )
         return "\n".join(lines)
@@ -417,15 +417,28 @@ class LiveRunner:
 
     def _send_started_message(self) -> None:
         mode = "simulated (no real orders)" if isinstance(self.order_executor, SimulatedOrderExecutor) else "testnet"
-        resumed = self.closed_trades > 0 or bool(self.store.list_open_trades())
+        open_trades = self.store.list_open_trades()
+        resumed = self.closed_trades > 0 or bool(open_trades)
         header = f"\U0001F7E2 Bot started ({'resumed' if resumed else 'fresh'} state)"
-        self._log(f"Starting live paper trading ({mode}) for {self.symbol} on {self.timeframe} candles")
-        self.notifier.send(
+        self._log(
+            f"Starting live paper trading ({mode}) for {self.symbol} on {self.timeframe} candles "
+            f"({len(open_trades)} open position(s) recovered from state)"
+        )
+        message = (
             f"{header}\n"
             f"Symbol: {self.symbol}\nTimeframe: {self.timeframe}\nMode: {mode}\n"
             f"Capital: {self._fmt_usdt(self.risk_manager.config.capital)}\n"
-            f"Cumulative PnL so far: {self._fmt_usdt(self.cumulative_pnl, signed=True)} over {self.closed_trades} trades"
+            f"Cumulative PnL so far: {self._fmt_usdt(self.cumulative_pnl, signed=True)} over {self.closed_trades} trades\n"
+            f"Open positions recovered: {len(open_trades)}"
         )
+        if open_trades:
+            for trade in open_trades:
+                message += (
+                    f"\n{trade.side.upper()} {trade.symbol} qty={trade.remaining_quantity:.6f} "
+                    f"entry={trade.entry_execution_price:.2f} trailing_stop={trade.trailing_stop:.2f} "
+                    f"target={trade.take_profit:.2f}"
+                )
+        self.notifier.send(message)
 
     def _send_stopped_message(self) -> None:
         self._log("Bot stopping")

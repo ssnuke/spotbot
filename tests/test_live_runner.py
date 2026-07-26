@@ -3,7 +3,7 @@ import pytest
 from app.live_runner import LiveRunner
 from app.order_executor import SimulatedOrderExecutor
 from app.risk_manager import RiskConfig, RiskManager
-from app.state_store import ClosedTradeRecord, StateStore
+from app.state_store import ClosedTradeRecord, OpenTradeState, StateStore
 from app.telemetry import Telemetry
 
 
@@ -370,6 +370,39 @@ def test_started_message_reports_fresh_vs_resumed_state():
     runner.closed_trades = 5
     runner._send_started_message()
     assert "resumed state" in notifier.sent[0]
+
+
+def test_started_message_lists_recovered_open_positions():
+    notifier = FakeNotifier()
+    store = StateStore(":memory:")
+    store.add_open_trade(
+        OpenTradeState(
+            id=None,
+            symbol="SOL/USDT",
+            side="buy",
+            entry_price=74.67,
+            entry_execution_price=74.67,
+            stop_loss=73.92,
+            take_profit=76.12,
+            quantity=0.301488,
+            remaining_quantity=0.301488,
+            trailing_stop=75.01,
+            partial_exit_done=True,
+            entry_order_id="1",
+            opened_at="2026-07-26T00:00:00",
+            realized_pnl_so_far=1.5,
+        )
+    )
+    runner = _make_runner(_make_candles([100.0] * 5), notifier=notifier, store=store)
+
+    runner._send_started_message()
+
+    assert "resumed state" in notifier.sent[0]
+    assert "Open positions recovered: 1" in notifier.sent[0]
+    assert "BUY SOL/USDT" in notifier.sent[0]
+    assert "entry=74.67" in notifier.sent[0]
+    assert "trailing_stop=75.01" in notifier.sent[0]
+    assert "target=76.12" in notifier.sent[0]
 
 
 def test_status_message_includes_inr_conversion_when_rate_available():
