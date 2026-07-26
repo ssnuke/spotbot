@@ -198,6 +198,7 @@ class LiveRunner:
         order_side = "BUY" if signal.side == "buy" else "SELL"
         order = self.order_executor.place_order(self.symbol, order_side, quantity, reference_price=entry_price)
         fill_price, entry_fee = _extract_fill(order, fallback_price=entry_price)
+        self.cumulative_pnl -= entry_fee
 
         risk_per_unit = abs(entry_price - stop_loss_price)
         reward_ratio = self.risk_manager.config.reward_ratio
@@ -221,6 +222,7 @@ class LiveRunner:
             partial_exit_done=False,
             entry_order_id=str(order.get("orderId", "")),
             opened_at=datetime.now(timezone.utc).isoformat(),
+            realized_pnl_so_far=-entry_fee,
         )
         self.store.add_open_trade(trade_state)
         self.risk_manager.open_positions += 1
@@ -253,11 +255,27 @@ class LiveRunner:
         trade.remaining_quantity -= partial_qty
         trade.partial_exit_done = True
         trade.trailing_stop = trailing_stop
+        trade.realized_pnl_so_far += partial_pnl
         self.store.update_open_trade(
             trade.id,
             remaining_quantity=trade.remaining_quantity,
             partial_exit_done=1,
             trailing_stop=trailing_stop,
+            realized_pnl_so_far=trade.realized_pnl_so_far,
+        )
+        self.store.add_trade_history(
+            ClosedTradeRecord(
+                id=None,
+                symbol=trade.symbol,
+                side=trade.side,
+                entry_price=trade.entry_execution_price,
+                exit_price=partial_price,
+                quantity=partial_qty,
+                pnl=partial_pnl,
+                exit_reason="partial_profit",
+                opened_at=trade.opened_at,
+                closed_at=datetime.now(timezone.utc).isoformat(),
+            )
         )
         self.cumulative_pnl += partial_pnl
         self._save_risk_state()
@@ -279,8 +297,12 @@ class LiveRunner:
         else:
             pnl = trade.remaining_quantity * (trade.entry_execution_price - exit_price) - exit_fee
 
+        # The trade's true result includes the entry fee and any partial-exit profit
+        # banked earlier in its lifetime, not just this final segment's fill.
+        total_trade_pnl = trade.realized_pnl_so_far + pnl
+
         notional = trade.quantity * trade.entry_execution_price
-        self.risk_manager.register_trade_result(pnl, notional=notional)
+        self.risk_manager.register_trade_result(total_trade_pnl, notional=notional)
         self.store.remove_open_trade(trade.id)
         self.store.add_trade_history(
             ClosedTradeRecord(
@@ -299,20 +321,21 @@ class LiveRunner:
 
         self.cumulative_pnl += pnl
         self.closed_trades += 1
-        if pnl > 0:
+        if total_trade_pnl > 0:
             self.winning_trades += 1
-        elif pnl < 0:
+        elif total_trade_pnl < 0:
             self.losing_trades += 1
         self._save_risk_state()
 
         self._log(
             f"Closed {trade.side} {trade.symbol} @ {exit_price:.2f} reason={exit_reason} "
-            f"pnl={pnl:.2f} cumulative_pnl={self.cumulative_pnl:.2f}"
+            f"final_segment_pnl={pnl:.2f} total_trade_pnl={total_trade_pnl:.2f} "
+            f"cumulative_pnl={self.cumulative_pnl:.2f}"
         )
         win_rate = (self.winning_trades / self.closed_trades * 100) if self.closed_trades else 0.0
         self.notifier.send(
             f"✅ Closed {trade.side.upper()} {trade.symbol} @ {exit_price:.2f} ({exit_reason})\n"
-            f"Trade PnL: {self._fmt_usdt(pnl, signed=True)}\n"
+            f"Trade PnL: {self._fmt_usdt(total_trade_pnl, signed=True)}\n"
             f"Running PnL: {self._fmt_usdt(self.cumulative_pnl, signed=True)} over {self.closed_trades} trades "
             f"({win_rate:.1f}% win rate)"
         )

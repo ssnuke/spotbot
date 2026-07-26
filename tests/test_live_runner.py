@@ -1,3 +1,5 @@
+import pytest
+
 from app.live_runner import LiveRunner
 from app.order_executor import SimulatedOrderExecutor
 from app.risk_manager import RiskConfig, RiskManager
@@ -134,6 +136,65 @@ def test_closing_a_trade_updates_cumulative_pnl_and_persists():
     assert history[0].side == "buy"
     assert history[0].exit_reason == "trailing_stop"
     assert history[0].pnl == runner.cumulative_pnl
+
+
+def test_entry_fee_is_deducted_from_cumulative_pnl_immediately():
+    closes = [100.0 + i * 0.5 for i in range(60)]
+    runner = _make_runner(
+        _make_candles(closes),
+        order_executor=SimulatedOrderExecutor(trade_fee_pct=0.001, slippage_pct=0.0),
+    )
+    runner.run_once()
+
+    assert runner.risk_manager.open_positions == 1
+    open_trade = runner.store.list_open_trades()[0]
+    entry_notional = open_trade.quantity * open_trade.entry_execution_price
+    expected_fee = entry_notional * 0.001
+    assert open_trade.realized_pnl_so_far == pytest.approx(-expected_fee)
+    assert runner.cumulative_pnl == pytest.approx(-expected_fee)
+
+
+def test_win_loss_classification_uses_whole_trade_not_just_final_segment():
+    # A partial exit banks a solid gain; the final segment alone is a small loss,
+    # but the trade overall (partial + final) nets positive. It must count as a win.
+    uptrend = [100.0 + i * 0.5 for i in range(60)]
+    entry_price = uptrend[-1]  # 129.5
+
+    data_feed = FakeDataFeed(_make_candles(uptrend + [uptrend[-1]]))
+    # max_open_positions=1 so a partial exit (which doesn't free the position slot)
+    # can't let the strategy open a second position on the same continuing uptrend.
+    runner = _make_runner(
+        candles=[], data_feed=data_feed,
+        risk_config=RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_open_positions=1),
+    )
+    runner.run_once()
+    assert runner.risk_manager.open_positions == 1
+
+    # Price rises 1%+ -> triggers the 50% partial exit at a solid profit.
+    data_feed.candles = _make_candles(uptrend + [131.0, 131.0])
+    runner.run_once()
+    open_trade = runner.store.list_open_trades()[0]
+    assert open_trade.partial_exit_done is True
+    assert open_trade.realized_pnl_so_far > 0  # partial exit was profitable
+
+    # Price then pulls back below entry -> trailing-stop closes the rest at a loss,
+    # but not enough to erase the earlier partial gain.
+    data_feed.candles = _make_candles(uptrend + [131.0, 128.7, 128.7])
+    runner.run_once()
+
+    assert runner.risk_manager.open_positions == 0
+    history = runner.store.list_recent_trade_history(limit=5)
+    assert len(history) == 2  # one partial_profit record, one final trailing_stop record
+    final_record = history[0]  # most recent first
+    assert final_record.exit_reason == "trailing_stop"
+    assert final_record.pnl < 0  # final segment alone was a loss
+
+    total_trade_pnl = sum(r.pnl for r in history)
+    assert total_trade_pnl > 0  # but the whole trade was net positive
+
+    assert runner.winning_trades == 1  # correctly classified as a win, not a loss
+    assert runner.losing_trades == 0
+    assert runner.cumulative_pnl == pytest.approx(total_trade_pnl)
 
 
 def test_status_command_replies_with_summary():

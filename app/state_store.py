@@ -20,6 +20,7 @@ class OpenTradeState:
     partial_exit_done: bool
     entry_order_id: str
     opened_at: str
+    realized_pnl_so_far: float = 0.0
 
 
 @dataclass
@@ -58,9 +59,11 @@ class StateStore:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT, side TEXT, entry_price REAL, entry_execution_price REAL,
                 stop_loss REAL, take_profit REAL, quantity REAL, remaining_quantity REAL,
-                trailing_stop REAL, partial_exit_done INTEGER, entry_order_id TEXT, opened_at TEXT
+                trailing_stop REAL, partial_exit_done INTEGER, entry_order_id TEXT, opened_at TEXT,
+                realized_pnl_so_far REAL DEFAULT 0.0
             )"""
         )
+        self._ensure_open_trade_columns()
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS trade_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,6 +71,12 @@ class StateStore:
                 pnl REAL, exit_reason TEXT, opened_at TEXT, closed_at TEXT
             )"""
         )
+        self.conn.commit()
+
+    def _ensure_open_trade_columns(self) -> None:
+        existing = {row[1] for row in self.conn.execute("PRAGMA table_info(open_trades)")}
+        if "realized_pnl_so_far" not in existing:
+            self.conn.execute("ALTER TABLE open_trades ADD COLUMN realized_pnl_so_far REAL DEFAULT 0.0")
         self.conn.commit()
 
     def _ensure_pnl_columns(self) -> None:
@@ -137,8 +146,8 @@ class StateStore:
         cur = self.conn.execute(
             """INSERT INTO open_trades (symbol, side, entry_price, entry_execution_price, stop_loss,
                 take_profit, quantity, remaining_quantity, trailing_stop, partial_exit_done,
-                entry_order_id, opened_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                entry_order_id, opened_at, realized_pnl_so_far)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 trade.symbol,
                 trade.side,
@@ -152,6 +161,7 @@ class StateStore:
                 int(trade.partial_exit_done),
                 trade.entry_order_id,
                 trade.opened_at,
+                trade.realized_pnl_so_far,
             ),
         )
         self.conn.commit()
@@ -191,6 +201,7 @@ class StateStore:
                     partial_exit_done=bool(data["partial_exit_done"]),
                     entry_order_id=data["entry_order_id"],
                     opened_at=data["opened_at"],
+                    realized_pnl_so_far=data.get("realized_pnl_so_far") or 0.0,
                 )
             )
         return trades
