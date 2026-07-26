@@ -1,8 +1,23 @@
 from app.live_runner import LiveRunner
 from app.order_executor import SimulatedOrderExecutor
 from app.risk_manager import RiskConfig, RiskManager
-from app.state_store import StateStore
+from app.state_store import ClosedTradeRecord, StateStore
 from app.telemetry import Telemetry
+
+
+def _make_closed_trade_record(pnl):
+    return ClosedTradeRecord(
+        id=None,
+        symbol="BTC/USDT",
+        side="buy",
+        entry_price=100.0,
+        exit_price=101.0,
+        quantity=1.0,
+        pnl=pnl,
+        exit_reason="take_profit",
+        opened_at="2026-07-23T00:00:00",
+        closed_at="2026-07-23T01:00:00",
+    )
 
 
 class FakeDataFeed:
@@ -114,6 +129,12 @@ def test_closing_a_trade_updates_cumulative_pnl_and_persists():
     assert persisted["cumulative_pnl"] == runner.cumulative_pnl
     assert persisted["closed_trades"] == 1
 
+    history = runner.store.list_recent_trade_history(limit=5)
+    assert len(history) == 1
+    assert history[0].side == "buy"
+    assert history[0].exit_reason == "trailing_stop"
+    assert history[0].pnl == runner.cumulative_pnl
+
 
 def test_status_command_replies_with_summary():
     notifier = FakeNotifier()
@@ -128,6 +149,59 @@ def test_status_command_replies_with_summary():
     assert len(notifier.sent) == 1
     assert "Closed trades: 3" in notifier.sent[0]
     assert "42.5" in notifier.sent[0]
+    assert "Symbol:" in notifier.sent[0]  # /status includes symbol/open-position context
+
+
+def test_pnl_command_is_distinct_from_status():
+    notifier = FakeNotifier()
+    runner = _make_runner(_make_candles([100.0] * 5), notifier=notifier)
+    runner.closed_trades = 4
+    runner.winning_trades = 3
+    runner.losing_trades = 1
+    runner.cumulative_pnl = 40.0
+
+    runner._handle_command("/pnl")
+
+    assert len(notifier.sent) == 1
+    assert "PnL" in notifier.sent[0]
+    assert "Avg PnL per closed trade" in notifier.sent[0]
+    assert "10.00" in notifier.sent[0]  # 40.0 / 4 trades average
+    assert "Symbol:" not in notifier.sent[0]  # leaner than /status, no position/risk context
+    assert "Daily trades used" not in notifier.sent[0]
+
+
+def test_history_command_defaults_to_five_and_shows_most_recent_first():
+    notifier = FakeNotifier()
+    runner = _make_runner(_make_candles([100.0] * 5), notifier=notifier)
+    for i in range(7):
+        runner.store.add_trade_history(_make_closed_trade_record(pnl=float(i)))
+
+    runner._handle_command("/history")
+
+    assert len(notifier.sent) == 1
+    assert "Last 5 closed trade" in notifier.sent[0]
+    lines = notifier.sent[0].split("\n")
+    assert "pnl=+6.00" in lines[1]  # most recently added trade first
+
+
+def test_history_command_accepts_custom_limit():
+    notifier = FakeNotifier()
+    runner = _make_runner(_make_candles([100.0] * 5), notifier=notifier)
+    for i in range(7):
+        runner.store.add_trade_history(_make_closed_trade_record(pnl=float(i)))
+
+    runner._handle_command("/history 2")
+
+    assert "Last 2 closed trade" in notifier.sent[0]
+
+
+def test_history_command_with_no_trades_yet():
+    notifier = FakeNotifier()
+    runner = _make_runner(_make_candles([100.0] * 5), notifier=notifier)
+
+    runner._handle_command("/history")
+
+    assert notifier.sent == ["No closed trades yet."]
 
 
 def test_unknown_command_gets_a_helpful_reply():

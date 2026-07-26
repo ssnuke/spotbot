@@ -11,7 +11,7 @@ from app.fx import get_usd_inr_rate
 from app.notifications import TelegramNotifier
 from app.order_executor import OrderExecutor, SimulatedOrderExecutor
 from app.risk_manager import RiskConfig, RiskManager
-from app.state_store import OpenTradeState, StateStore
+from app.state_store import ClosedTradeRecord, OpenTradeState, StateStore
 from app.strategy import TAEStrategy, TAEStrategyConfig
 from app.telemetry import Telemetry
 
@@ -20,8 +20,9 @@ DEFAULT_SYMBOL_FILTERS = SymbolFilters(step_size=0.000001, tick_size=0.01, min_n
 HELP_TEXT = (
     "\U0001F916 Commands:\n"
     "/status - open positions, PnL, and risk counters\n"
-    "/pnl - cumulative PnL and trade counts\n"
+    "/pnl - cumulative PnL, win/loss counts, and average PnL per trade\n"
     "/trades or /openpositions - list currently open trades\n"
+    "/history [N] - last N closed trades with entry/exit/reason/pnl (default 5, max 20)\n"
     "/price - current market price\n"
     "/pause - stop opening new positions (existing ones still managed)\n"
     "/resume - resume opening new positions after a /pause\n"
@@ -281,6 +282,20 @@ class LiveRunner:
         notional = trade.quantity * trade.entry_execution_price
         self.risk_manager.register_trade_result(pnl, notional=notional)
         self.store.remove_open_trade(trade.id)
+        self.store.add_trade_history(
+            ClosedTradeRecord(
+                id=None,
+                symbol=trade.symbol,
+                side=trade.side,
+                entry_price=trade.entry_execution_price,
+                exit_price=exit_price,
+                quantity=trade.remaining_quantity,
+                pnl=pnl,
+                exit_reason=exit_reason,
+                opened_at=trade.opened_at,
+                closed_at=datetime.now(timezone.utc).isoformat(),
+            )
+        )
 
         self.cumulative_pnl += pnl
         self.closed_trades += 1
@@ -353,6 +368,30 @@ class LiveRunner:
             )
         return "\n".join(lines)
 
+    def _pnl_message(self) -> str:
+        win_rate = (self.winning_trades / self.closed_trades * 100) if self.closed_trades else 0.0
+        avg_pnl = (self.cumulative_pnl / self.closed_trades) if self.closed_trades else 0.0
+        return (
+            f"\U0001F4B0 PnL\n"
+            f"Cumulative PnL: {self._fmt_usdt(self.cumulative_pnl, signed=True)}\n"
+            f"Closed trades: {self.closed_trades} (W:{self.winning_trades} L:{self.losing_trades}, "
+            f"{win_rate:.1f}% win rate)\n"
+            f"Avg PnL per closed trade: {self._fmt_usdt(avg_pnl, signed=True)}"
+        )
+
+    def _recent_trades_message(self, limit: int = 5) -> str:
+        records = self.store.list_recent_trade_history(limit=limit)
+        if not records:
+            return "No closed trades yet."
+        lines = [f"\U0001F4CB Last {len(records)} closed trade(s):"]
+        for record in records:
+            lines.append(
+                f"{record.side.upper()} {record.symbol} entry={record.entry_price:.2f} "
+                f"exit={record.exit_price:.2f} ({record.exit_reason}) "
+                f"pnl={self._fmt_usdt(record.pnl, signed=True)}"
+            )
+        return "\n".join(lines)
+
     def _send_started_message(self) -> None:
         mode = "simulated (no real orders)" if isinstance(self.order_executor, SimulatedOrderExecutor) else "testnet"
         resumed = self.closed_trades > 0 or bool(self.store.list_open_trades())
@@ -376,9 +415,15 @@ class LiveRunner:
         elif command == "/status":
             self.notifier.send(self._status_message())
         elif command == "/pnl":
-            self.notifier.send(self._status_message(prefix="\U0001F4B0 PnL"))
+            self.notifier.send(self._pnl_message())
         elif command in ("/trades", "/openpositions"):
             self.notifier.send(self._open_trades_message())
+        elif command == "/history":
+            parts = text.strip().split()
+            limit = 5
+            if len(parts) > 1 and parts[1].isdigit():
+                limit = max(1, min(int(parts[1]), 20))
+            self.notifier.send(self._recent_trades_message(limit=limit))
         elif command == "/price":
             price = self.data_feed.get_latest_price(self.symbol)
             self.notifier.send(f"{self.symbol}: {price:.2f}" if price is not None else "Price unavailable right now.")

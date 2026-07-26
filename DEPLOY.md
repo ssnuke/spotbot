@@ -161,9 +161,11 @@ Beyond automatic notifications (bot started/stopped, trade opened/closed,
 periodic status updates every `live.summary_interval_seconds`, default
 hourly), the bot listens for commands sent to it in your configured chat:
 
-- `/status` — open positions, cumulative PnL, win/loss counts, cooldown state
-- `/pnl` — same summary, framed as a PnL check
+- `/status` — open positions, cumulative PnL, win/loss counts, capital, cooldown state
+- `/pnl` — leaner performance view: cumulative PnL, win/loss counts, avg PnL per trade
 - `/trades` or `/openpositions` — details of any currently open trade(s)
+- `/history [N]` — last N closed trades with entry/exit price, exit reason, and PnL
+  for each (default 5, capped at 20, e.g. `/history 10`)
 - `/price` — current market price for the configured symbol
 - `/pause` — stop opening new positions; existing ones are still monitored and will
   exit normally (stop-loss/take-profit/trailing-stop keep working while paused)

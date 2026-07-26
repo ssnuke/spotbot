@@ -1,5 +1,5 @@
 from app.risk_manager import RiskConfig, RiskManager
-from app.state_store import OpenTradeState, StateStore
+from app.state_store import ClosedTradeRecord, OpenTradeState, StateStore
 
 
 def test_risk_state_round_trip():
@@ -73,3 +73,45 @@ def test_open_trade_lifecycle():
 
     store.remove_open_trade(trade_id)
     assert store.list_open_trades() == []
+
+
+def _make_closed_trade(pnl, closed_at):
+    return ClosedTradeRecord(
+        id=None,
+        symbol="BTC/USDT",
+        side="buy",
+        entry_price=100.0,
+        exit_price=101.0,
+        quantity=1.0,
+        pnl=pnl,
+        exit_reason="take_profit",
+        opened_at="2026-07-23T00:00:00",
+        closed_at=closed_at,
+    )
+
+
+def test_trade_history_round_trip():
+    store = StateStore(":memory:")
+    store.add_trade_history(_make_closed_trade(pnl=5.0, closed_at="2026-07-23T01:00:00"))
+
+    records = store.list_recent_trade_history(limit=5)
+    assert len(records) == 1
+    assert records[0].pnl == 5.0
+    assert records[0].exit_reason == "take_profit"
+    assert records[0].symbol == "BTC/USDT"
+
+
+def test_trade_history_returns_most_recent_first_and_respects_limit():
+    store = StateStore(":memory:")
+    for i in range(8):
+        store.add_trade_history(_make_closed_trade(pnl=float(i), closed_at=f"2026-07-23T0{i}:00:00"))
+
+    records = store.list_recent_trade_history(limit=5)
+    assert len(records) == 5
+    # most recently inserted (pnl=7) should come first
+    assert [r.pnl for r in records] == [7.0, 6.0, 5.0, 4.0, 3.0]
+
+
+def test_trade_history_empty_returns_empty_list():
+    store = StateStore(":memory:")
+    assert store.list_recent_trade_history(limit=5) == []

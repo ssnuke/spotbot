@@ -22,6 +22,20 @@ class OpenTradeState:
     opened_at: str
 
 
+@dataclass
+class ClosedTradeRecord:
+    id: Optional[int]
+    symbol: str
+    side: str
+    entry_price: float
+    exit_price: float
+    quantity: float
+    pnl: float
+    exit_reason: str
+    opened_at: str
+    closed_at: str
+
+
 class StateStore:
     """Persists risk-manager state and open positions to SQLite so the live runner
     can be killed and restarted without losing track of open trades or risk counters."""
@@ -45,6 +59,13 @@ class StateStore:
                 symbol TEXT, side TEXT, entry_price REAL, entry_execution_price REAL,
                 stop_loss REAL, take_profit REAL, quantity REAL, remaining_quantity REAL,
                 trailing_stop REAL, partial_exit_done INTEGER, entry_order_id TEXT, opened_at TEXT
+            )"""
+        )
+        self.conn.execute(
+            """CREATE TABLE IF NOT EXISTS trade_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT, side TEXT, entry_price REAL, exit_price REAL, quantity REAL,
+                pnl REAL, exit_reason TEXT, opened_at TEXT, closed_at TEXT
             )"""
         )
         self.conn.commit()
@@ -173,6 +194,50 @@ class StateStore:
                 )
             )
         return trades
+
+    def add_trade_history(self, record: ClosedTradeRecord) -> int:
+        cur = self.conn.execute(
+            """INSERT INTO trade_history (symbol, side, entry_price, exit_price, quantity,
+                pnl, exit_reason, opened_at, closed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                record.symbol,
+                record.side,
+                record.entry_price,
+                record.exit_price,
+                record.quantity,
+                record.pnl,
+                record.exit_reason,
+                record.opened_at,
+                record.closed_at,
+            ),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def list_recent_trade_history(self, limit: int = 5) -> List[ClosedTradeRecord]:
+        cur = self.conn.execute(
+            "SELECT * FROM trade_history ORDER BY id DESC LIMIT ?", (limit,)
+        )
+        columns = [d[0] for d in cur.description]
+        records = []
+        for row in cur.fetchall():
+            data = dict(zip(columns, row))
+            records.append(
+                ClosedTradeRecord(
+                    id=data["id"],
+                    symbol=data["symbol"],
+                    side=data["side"],
+                    entry_price=data["entry_price"],
+                    exit_price=data["exit_price"],
+                    quantity=data["quantity"],
+                    pnl=data["pnl"],
+                    exit_reason=data["exit_reason"],
+                    opened_at=data["opened_at"],
+                    closed_at=data["closed_at"],
+                )
+            )
+        return records
 
     def close(self) -> None:
         self.conn.close()

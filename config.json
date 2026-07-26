@@ -1,6 +1,6 @@
 {
   "risk": {
-    "capital": 3000.0,
+    "capital": 300.0,
     "risk_per_trade_pct": 0.005,
     "reward_ratio": 2.0,
     "max_daily_loss_pct": 0.01,
