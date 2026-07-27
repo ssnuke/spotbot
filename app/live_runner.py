@@ -139,17 +139,19 @@ class LiveRunner:
         if state.get("peak_equity") is not None:
             self.risk_manager.peak_equity = state["peak_equity"]
 
-        # If capital was lowered in config while trades opened under a larger capital
-        # are still open, the persisted allocation can exceed the new capital, making
-        # available capital permanently negative and blocking all new trades. Clamp it
-        # so the account self-heals as those positions close naturally.
-        if self.risk_manager.allocated_capital > self.risk_manager.config.capital:
+        # If capital (or, under compounding, equity) was lowered while trades opened
+        # under a larger reference were still open, the persisted allocation can
+        # exceed the new reference capital, making available capital permanently
+        # negative and blocking all new trades. Clamp it so the account self-heals
+        # as those positions close naturally.
+        reference_capital = self.risk_manager._reference_capital()
+        if self.risk_manager.allocated_capital > reference_capital:
             self._log(
                 f"WARNING: persisted allocated_capital ({self.risk_manager.allocated_capital:.2f}) exceeds "
-                f"configured capital ({self.risk_manager.config.capital:.2f}) — capital was likely reduced "
+                f"reference capital ({reference_capital:.2f}) — capital/equity was likely reduced "
                 "while positions were open. Clamping so new trades aren't permanently blocked."
             )
-            self.risk_manager.allocated_capital = self.risk_manager.config.capital
+            self.risk_manager.allocated_capital = reference_capital
             self._save_risk_state()
 
     def _save_risk_state(self) -> None:
@@ -373,7 +375,7 @@ class LiveRunner:
             f"Closed trades: {self.closed_trades} (W:{self.winning_trades} L:{self.losing_trades}, "
             f"{win_rate:.1f}% win rate)\n"
             f"Cumulative PnL: {self._fmt_usdt(self.cumulative_pnl, signed=True)}\n"
-            f"Capital: {self._fmt_usdt(self.risk_manager.config.capital)}\n"
+            f"Capital: {self._fmt_usdt(self.risk_manager._reference_capital())}\n"
             f"Daily trades used: {self.risk_manager.daily_trades}/{self.risk_manager.config.max_trades_per_day}\n"
             f"Cooldown remaining: {self.risk_manager.cooldown_remaining} ticks"
         )
@@ -427,7 +429,7 @@ class LiveRunner:
         message = (
             f"{header}\n"
             f"Symbol: {self.symbol}\nTimeframe: {self.timeframe}\nMode: {mode}\n"
-            f"Capital: {self._fmt_usdt(self.risk_manager.config.capital)}\n"
+            f"Capital: {self._fmt_usdt(self.risk_manager._reference_capital())}\n"
             f"Cumulative PnL so far: {self._fmt_usdt(self.cumulative_pnl, signed=True)} over {self.closed_trades} trades\n"
             f"Open positions recovered: {len(open_trades)}"
         )

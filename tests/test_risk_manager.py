@@ -137,3 +137,57 @@ def test_min_entry_spacing_only_applies_to_the_same_side():
 
     # Opposite side is unaffected by the buy-side spacing timer.
     assert manager.validate_trade(entry_price=100.0, stop_loss_price=105.0, side="sell")
+
+
+def test_compounding_disabled_by_default_position_size_stays_fixed():
+    manager = RiskManager(RiskConfig(capital=10000, risk_per_trade_pct=0.01, max_position_pct=1.0))
+    plan_before = manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0, side="buy")
+    manager.register_trade_result(pnl=plan_before.notional, notional=plan_before.notional)  # equity doubles
+
+    # Without compounding, position size should be identical regardless of the equity gain.
+    plan_after = manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0, side="buy")
+    assert plan_after.position_size == pytest.approx(plan_before.position_size)
+
+
+def test_compounding_enabled_grows_position_size_after_a_gain():
+    manager = RiskManager(
+        RiskConfig(capital=10000, risk_per_trade_pct=0.01, max_position_pct=1.0, compounding_enabled=True)
+    )
+    plan_before = manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0, side="buy")
+    manager.register_trade_result(pnl=10000.0, notional=plan_before.notional)  # equity: 10000 -> 20000
+
+    plan_after = manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0, side="buy")
+    # Equity doubled, so risk_amount (and therefore position size) should double too.
+    assert plan_after.position_size == pytest.approx(plan_before.position_size * 2, rel=1e-6)
+
+
+def test_compounding_enabled_shrinks_position_size_after_a_loss():
+    manager = RiskManager(
+        RiskConfig(
+            capital=10000, risk_per_trade_pct=0.01, max_position_pct=1.0,
+            max_drawdown_pct=1.0, max_daily_loss_pct=1.0,  # neutralized to isolate sizing behavior only
+            compounding_enabled=True,
+        )
+    )
+    plan_before = manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0, side="buy")
+    manager.register_trade_result(pnl=-5000.0, notional=plan_before.notional)  # equity: 10000 -> 5000
+    manager.daily_loss = 0.0  # isolate sizing behavior; daily-loss-limit behavior has its own test
+
+    plan_after = manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0, side="buy")
+    assert plan_after.position_size == pytest.approx(plan_before.position_size * 0.5, rel=1e-6)
+
+
+def test_compounding_uses_equity_for_daily_loss_and_available_capital_limits():
+    manager = RiskManager(
+        RiskConfig(
+            capital=10000, risk_per_trade_pct=0.01, max_position_pct=1.0,
+            max_daily_loss_pct=0.5, max_drawdown_pct=1.0,  # drawdown check neutralized to isolate daily-loss behavior
+            compounding_enabled=True,
+        )
+    )
+    manager.register_trade_result(pnl=-9000.0, notional=0.0)  # equity now 1000
+    manager.daily_loss = 400.0  # 40% of the ORIGINAL 10000 capital, but 40% of current equity (1000) is only 400 too
+    # max_daily_loss_pct=0.5 of current equity (1000) = 500; daily_loss (400) is under that -> still allowed
+    assert manager.validate_trade(entry_price=100.0, stop_loss_price=99.0)
+    manager.daily_loss = 600.0  # now over 50% of current equity (1000) -> blocked
+    assert not manager.validate_trade(entry_price=100.0, stop_loss_price=99.0)

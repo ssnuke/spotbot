@@ -17,6 +17,7 @@ class RiskConfig:
     max_consecutive_losses: int = 0
     cooldown_period: int = 0
     min_entry_spacing_ticks: int = 0
+    compounding_enabled: bool = False
 
 
 @dataclass
@@ -53,7 +54,7 @@ class RiskManager:
         current_price: Optional[float] = None,
     ) -> bool:
         side = side.lower()
-        if self.config.capital <= 0:
+        if self._reference_capital() <= 0:
             return False
         if self.daily_trades >= self.config.max_trades_per_day:
             return False
@@ -81,8 +82,14 @@ class RiskManager:
             return False
         return True
 
+    def _reference_capital(self) -> float:
+        """The capital base used for position sizing and risk limits: the static
+        configured capital, or -- if compounding is enabled -- the account's current
+        tracked equity, so position sizes grow and shrink with real realized P&L."""
+        return self.equity if self.config.compounding_enabled else self.config.capital
+
     def _available_capital(self) -> float:
-        return self.config.capital - self.allocated_capital
+        return self._reference_capital() - self.allocated_capital
 
     def tick(self) -> None:
         """Advance time by one bar/tick, decaying any active loss-streak cooldown and
@@ -100,12 +107,13 @@ class RiskManager:
         if risk_per_unit <= 0:
             raise ValueError("Invalid stop-loss distance")
 
-        risk_amount = self.config.capital * self.config.risk_per_trade_pct
+        reference_capital = self._reference_capital()
+        risk_amount = reference_capital * self.config.risk_per_trade_pct
         position_size = risk_amount / risk_per_unit
 
         # Hard cap on notional exposure per trade, independent of stop distance:
         # a tight stop should never translate into an oversized position.
-        max_notional = min(self.config.capital * self.config.max_position_pct, self._available_capital())
+        max_notional = min(reference_capital * self.config.max_position_pct, self._available_capital())
         if max_notional <= 0:
             raise ValueError("No available capital to open a new position")
         notional = position_size * entry_price
@@ -160,7 +168,7 @@ class RiskManager:
         self.daily_loss = 0.0
 
     def _daily_loss_exceeded(self) -> bool:
-        max_daily_loss = self.config.capital * self.config.max_daily_loss_pct
+        max_daily_loss = self._reference_capital() * self.config.max_daily_loss_pct
         return self.daily_loss >= max_daily_loss
 
     def _max_drawdown_exceeded(self) -> bool:

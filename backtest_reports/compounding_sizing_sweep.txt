@@ -1,0 +1,73 @@
+COMPOUNDING POSITION SIZING — VALIDATION SWEEP
+================================================
+Date: 2026-07-27
+Feature: RiskConfig.compounding_enabled (app/risk_manager.py)
+
+BACKGROUND
+----------
+Prior to this change, position sizing (risk_amount, max_position_pct notional cap,
+daily-loss-limit basis) always used the static configured `capital` value, never the
+live tracked `equity`. This meant the bot was NOT compounding: a winning account
+never grew its position sizes, and a shrinking account never reduced them either
+(aside from the unrelated, pre-existing equity/peak_equity-based max_drawdown_pct
+gate, which was always live-equity-based regardless of this flag).
+
+`compounding_enabled` (default: false until this change) switches the reference
+capital used for sizing and the daily-loss gate from `config.capital` to the live
+`self.equity`, via `RiskManager._reference_capital()`. Gated behind a config flag per
+this project's standard pattern, and covered by 4 new unit tests in
+tests/test_risk_manager.py before this sweep was run.
+
+METHOD
+------
+Full-year backtests (5m candles, non-overlapping single run per year) with the
+production strategy/risk defaults, run twice per dataset — compounding_enabled=False
+vs True — at two starting capital levels ($300 and $50,000) to confirm the effect is
+proportional and not capital-dependent.
+
+Datasets: SOL/USDT 2021 (bull), 2022 (crash), 2025; BTC/USDT 2023, 2024, 2025.
+
+RESULTS
+-------
+Dataset            Capital       Ret OFF     Ret ON    DD OFF    DD ON   Trades OFF  Trades ON
+SOL 2021 (bull)     $300/$50k     114.62%    213.54%     2.18%    3.56%       3624        3624
+SOL 2022 (crash)    $300/$50k      81.34%    124.89%     3.08%    4.12%       3627        3627
+SOL 2025            $300/$50k     105.14%    185.28%     3.22%    3.62%       3741        3741
+BTC 2023            $300/$50k     127.86%     88.97%     3.82%    5.08%       3503        2102
+BTC 2024            $300/$50k      98.74%    167.62%     3.71%    4.17%       3727        3727
+BTC 2025            $300/$50k     112.14%    205.98%     2.75%    4.24%       3719        3719
+
+Returns were IDENTICAL at $300 and $50,000 starting capital in every dataset,
+confirming the implementation scales proportionally rather than being an artifact of
+a particular capital level.
+
+5 of 6 periods: compounding is a large, unambiguous win (+43 to +99 percentage points
+of extra return), with a modest, acceptable increase in max drawdown (~1-1.5pp).
+
+1 of 6 periods (BTC 2023): compounding is a net loss vs. non-compounding
+(127.86% -> 88.97%) — still strongly profitable, just weaker than the alternative.
+
+ROOT CAUSE OF THE BTC 2023 REGRESSION (confirmed via instrumentation, not guessed)
+-----------------------------------------------------------------------------------
+Instrumented RiskManager on BTC 2023 @ $50,000:
+  compounding_enabled=False: 3503 trades, 0 max_drawdown_exceeded blocks
+  compounding_enabled=True:  2102 trades, 11,804 max_drawdown_exceeded blocks
+
+Mechanism: compounding sizes every trade off *current* equity, so the largest
+positions land exactly when equity is at a local peak -- right before a drawdown
+begins. In a choppy, range-bound year like BTC 2023, this amplifies drawdowns in
+percentage terms, which trips the pre-existing max_drawdown_pct=5% circuit breaker
+(itself always equity/peak_equity-based, independent of this flag) far more often.
+That breaker then locks the bot out of new trades almost twice as often, suppressing
+exactly the recovery trades that would help performance -- a structural
+characteristic of fixed-fractional compounding interacting with a hard equity-based
+drawdown gate, not a bug in the implementation.
+
+DECISION
+--------
+Shipped as the new default (compounding_enabled: true in both config.json "risk" and
+"backtest" sections) after reviewing this tradeoff: large, consistent gains in 5/6
+tested periods, and still-profitable (not a loss) in the one weaker period. Revisit
+if a future choppy-market period shows the same pattern with harsher results, or
+consider decoupling the drawdown gate's basis from live equity as a follow-up
+refinement.
