@@ -15,6 +15,27 @@ class FakeBinanceClient:
         return {"orderId": "FAKE", "fills": [{"qty": str(quantity), "price": "100.0", "commission": "0.0"}]}
 
 
+class FailingOrderExecutor:
+    """Every order placement raises, simulating a rejected order / network failure."""
+
+    def place_order(self, symbol, side, quantity, reference_price):
+        raise RuntimeError("simulated exchange rejection")
+
+
+class PartialFillOrderExecutor:
+    """Fills only a fraction of every requested quantity, simulating thin liquidity."""
+
+    def __init__(self, fill_fraction=0.5, trade_fee_pct=0.0, slippage_pct=0.0):
+        self.fill_fraction = fill_fraction
+        self._inner = SimulatedOrderExecutor(trade_fee_pct=trade_fee_pct, slippage_pct=slippage_pct)
+
+    def place_order(self, symbol, side, quantity, reference_price):
+        order = self._inner.place_order(symbol, side, quantity, reference_price)
+        fill = order["fills"][0]
+        fill["qty"] = str(float(fill["qty"]) * self.fill_fraction)
+        return order
+
+
 def _make_closed_trade_record(pnl):
     return ClosedTradeRecord(
         id=None,
@@ -119,6 +140,55 @@ def test_open_position_persists_and_updates_risk_manager():
     assert runner.risk_manager.allocated_capital > 0
 
 
+def test_failed_order_placement_releases_reserved_capital_and_daily_trade_slot():
+    closes = [100.0 + i * 0.5 for i in range(60)]
+    runner = _make_runner(_make_candles(closes), order_executor=FailingOrderExecutor())
+
+    daily_trades_before = runner.risk_manager.daily_trades
+    allocated_before = runner.risk_manager.allocated_capital
+
+    runner.run_once()  # signal fires, order placement raises
+
+    assert runner.store.list_open_trades() == []
+    assert runner.risk_manager.open_positions == 0
+    # The reservation create_trade_plan() made must be fully released, not left dangling.
+    assert runner.risk_manager.daily_trades == daily_trades_before
+    assert runner.risk_manager.allocated_capital == pytest.approx(allocated_before)
+
+
+def test_failed_order_placement_does_not_permanently_block_future_trades():
+    # A rejected order shouldn't eat into max_trades_per_day -- confirm a real trade can
+    # still open afterward once a working executor is swapped in.
+    closes = [100.0 + i * 0.5 for i in range(60)]
+    failing_runner = _make_runner(
+        _make_candles(closes),
+        order_executor=FailingOrderExecutor(),
+        risk_config=RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_trades_per_day=1),
+    )
+    failing_runner.run_once()  # the only daily slot would be gone forever if not released
+    assert failing_runner.risk_manager.daily_trades == 0
+
+    failing_runner.order_executor = SimulatedOrderExecutor(trade_fee_pct=0.0, slippage_pct=0.0)
+    failing_runner._last_candle_open_time = None  # force the candle to be treated as "new" again
+    failing_runner.run_once()
+
+    assert failing_runner.risk_manager.open_positions == 1
+
+
+def test_partial_fill_on_open_uses_actual_filled_quantity():
+    closes = [100.0 + i * 0.5 for i in range(60)]
+    runner = _make_runner(
+        _make_candles(closes),
+        order_executor=PartialFillOrderExecutor(fill_fraction=0.5),
+    )
+    runner.run_once()
+
+    open_trade = runner.store.list_open_trades()[0]
+    plan_quantity = open_trade.quantity / 0.5  # what would've been recorded before this fix
+    assert open_trade.quantity == pytest.approx(plan_quantity * 0.5)
+    assert open_trade.remaining_quantity == open_trade.quantity
+
+
 def test_closing_a_trade_updates_cumulative_pnl_and_persists():
     # Uptrend to open a buy; the data feed then "advances" to a crashed price to force a close.
     uptrend = [100.0 + i * 0.5 for i in range(60)]
@@ -144,6 +214,23 @@ def test_closing_a_trade_updates_cumulative_pnl_and_persists():
     assert history[0].side == "buy"
     assert history[0].exit_reason == "trailing_stop"
     assert history[0].pnl == runner.cumulative_pnl
+
+
+def test_failed_close_order_leaves_trade_open_for_retry_next_poll():
+    uptrend = [100.0 + i * 0.5 for i in range(60)]
+    data_feed = FakeDataFeed(_make_candles(uptrend + [uptrend[-1]]))
+    runner = _make_runner(candles=[], data_feed=data_feed)
+    runner.run_once()
+    assert runner.risk_manager.open_positions == 1
+
+    runner.order_executor = FailingOrderExecutor()
+    data_feed.candles = _make_candles(uptrend + [50.0, 50.0])  # would trigger stop-loss close
+    runner.run_once()  # close order raises
+
+    # Nothing was mutated -- the trade is still open, exactly as before, ready to retry.
+    assert runner.risk_manager.open_positions == 1
+    assert len(runner.store.list_open_trades()) == 1
+    assert runner.closed_trades == 0
 
 
 def test_closed_trade_message_renders_a_table_with_entry_exit_fees_pnl_capital():

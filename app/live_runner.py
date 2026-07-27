@@ -31,16 +31,19 @@ HELP_TEXT = (
 )
 
 
-def _extract_fill(order: dict, fallback_price: float) -> tuple[float, float]:
-    """Returns (fill_price, total_fee) from an order response's fills."""
+def _extract_fill(order: dict, fallback_price: float, fallback_quantity: float = 0.0) -> tuple[float, float, float]:
+    """Returns (fill_price, filled_quantity, total_fee) from an order response's fills.
+    filled_quantity is the ACTUAL amount the exchange filled, which for a market order on a
+    liquid pair is essentially always the full requested amount, but should never be assumed --
+    a thin book or a rejected/partially-filled order means less (or nothing) actually filled."""
     fills = order.get("fills") or []
     if not fills:
-        return fallback_price, 0.0
+        return fallback_price, fallback_quantity, 0.0
     total_qty = sum(float(f["qty"]) for f in fills)
     total_cost = sum(float(f["qty"]) * float(f["price"]) for f in fills)
     total_fee = sum(float(f.get("commission", 0.0)) for f in fills)
     price = total_cost / total_qty if total_qty > 0 else fallback_price
-    return price, total_fee
+    return price, total_qty, total_fee
 
 
 class LiveRunner:
@@ -109,6 +112,13 @@ class LiveRunner:
 
     def _log(self, message: str) -> None:
         self.telemetry.log(message)
+
+    def _release_reserved_trade_slot(self, plan) -> None:
+        """Undoes create_trade_plan()'s capital/daily-trade reservation for an order that
+        never actually resulted in an open position (skipped, rejected, or failed to place)."""
+        self.risk_manager.allocated_capital = max(0.0, self.risk_manager.allocated_capital - plan.notional)
+        self.risk_manager.daily_trades = max(0, self.risk_manager.daily_trades - 1)
+        self._save_risk_state()
 
     def _render_table(self, headers: list[str], rows: list[list[str]]) -> str:
         """Renders a compact, right-aligned monospace table for Telegram, wrapped in a
@@ -213,14 +223,26 @@ class LiveRunner:
         quantity = round_step_size(plan.position_size, self._symbol_filters.step_size)
         if quantity <= 0 or quantity * entry_price < self._symbol_filters.min_notional:
             self._log(f"Order below exchange minimums, skipping: qty={quantity}")
-            self.risk_manager.allocated_capital = max(0.0, self.risk_manager.allocated_capital - plan.notional)
-            self.risk_manager.daily_trades = max(0, self.risk_manager.daily_trades - 1)
-            self._save_risk_state()
+            self._release_reserved_trade_slot(plan)
             return
 
         order_side = "BUY" if signal.side == "buy" else "SELL"
-        order = self.order_executor.place_order(self.symbol, order_side, quantity, reference_price=entry_price)
-        fill_price, entry_fee = _extract_fill(order, fallback_price=entry_price)
+        try:
+            order = self.order_executor.place_order(self.symbol, order_side, quantity, reference_price=entry_price)
+        except Exception as exc:
+            # create_trade_plan() above already reserved capital and a daily-trade slot for
+            # this order -- if it never actually got placed, that reservation must be released,
+            # or it permanently blocks future trades with capital tied to a trade that doesn't exist.
+            print(f"Order placement failed, releasing reserved capital: {exc}")
+            self._log(f"Order placement failed, releasing reserved capital: {exc}")
+            self._release_reserved_trade_slot(plan)
+            return
+
+        fill_price, filled_quantity, entry_fee = _extract_fill(order, fallback_price=entry_price, fallback_quantity=quantity)
+        if filled_quantity <= 0:
+            self._log(f"Order placed but nothing filled (qty=0), releasing reserved capital")
+            self._release_reserved_trade_slot(plan)
+            return
         self.cumulative_pnl -= entry_fee
 
         risk_per_unit = abs(entry_price - stop_loss_price)
@@ -239,8 +261,8 @@ class LiveRunner:
             entry_execution_price=fill_price,
             stop_loss=stop_loss_price,
             take_profit=take_profit_price,
-            quantity=quantity,
-            remaining_quantity=quantity,
+            quantity=filled_quantity,
+            remaining_quantity=filled_quantity,
             trailing_stop=stop_loss_price,
             partial_exit_done=False,
             entry_order_id=str(order.get("orderId", "")),
@@ -252,13 +274,13 @@ class LiveRunner:
         self.risk_manager.open_positions += 1
         self._save_risk_state()
         self._log(
-            f"Opened {signal.side} {quantity} {self.symbol} @ {fill_price:.2f} "
+            f"Opened {signal.side} {filled_quantity} {self.symbol} @ {fill_price:.2f} "
             f"(SL={stop_loss_price:.2f} TP={take_profit_price:.2f}, fee={entry_fee:.4f})"
         )
         self.notifier.send(
             f"\U0001F4C8 {signal.side.upper()} {self.symbol}\n"
             f"Entry: {fill_price:.2f}\nStop: {stop_loss_price:.2f}\nTarget: {take_profit_price:.2f}\n"
-            f"Qty: {quantity}"
+            f"Qty: {filled_quantity}"
         )
 
     def _take_partial_exit(self, trade: OpenTradeState, current_price: float) -> None:
@@ -267,16 +289,27 @@ class LiveRunner:
             return
 
         close_side = "SELL" if trade.side == "buy" else "BUY"
-        order = self.order_executor.place_order(self.symbol, close_side, partial_qty, reference_price=current_price)
-        partial_price, partial_fee = _extract_fill(order, fallback_price=current_price)
+        try:
+            order = self.order_executor.place_order(self.symbol, close_side, partial_qty, reference_price=current_price)
+        except Exception as exc:
+            # Nothing has been mutated yet -- the trade stays open unchanged and this partial
+            # exit will simply be retried on the next poll if the price condition still holds.
+            print(f"Partial exit order failed, will retry next poll: {exc}")
+            self._log(f"Partial exit order failed, will retry next poll: {exc}")
+            return
+
+        partial_price, filled_qty, partial_fee = _extract_fill(order, fallback_price=current_price, fallback_quantity=partial_qty)
+        if filled_qty <= 0:
+            self._log("Partial exit order placed but nothing filled, will retry next poll")
+            return
         if trade.side == "buy":
-            partial_pnl = partial_qty * (partial_price - trade.entry_execution_price) - partial_fee
+            partial_pnl = filled_qty * (partial_price - trade.entry_execution_price) - partial_fee
             trailing_stop = max(trade.stop_loss, current_price * (1 - self.trailing_stop_pct))
         else:
-            partial_pnl = partial_qty * (trade.entry_execution_price - partial_price) - partial_fee
+            partial_pnl = filled_qty * (trade.entry_execution_price - partial_price) - partial_fee
             trailing_stop = min(trade.stop_loss, current_price * (1 + self.trailing_stop_pct))
 
-        trade.remaining_quantity -= partial_qty
+        trade.remaining_quantity -= filled_qty
         trade.partial_exit_done = True
         trade.trailing_stop = trailing_stop
         trade.realized_pnl_so_far += partial_pnl
@@ -296,7 +329,7 @@ class LiveRunner:
                 side=trade.side,
                 entry_price=trade.entry_execution_price,
                 exit_price=partial_price,
-                quantity=partial_qty,
+                quantity=filled_qty,
                 pnl=partial_pnl,
                 exit_reason="partial_profit",
                 opened_at=trade.opened_at,
@@ -306,7 +339,7 @@ class LiveRunner:
         )
         self.cumulative_pnl += partial_pnl
         self._save_risk_state()
-        self._log(f"Partial exit {partial_qty} {trade.symbol} @ {partial_price:.2f} pnl={partial_pnl:.2f}")
+        self._log(f"Partial exit {filled_qty} {trade.symbol} @ {partial_price:.2f} pnl={partial_pnl:.2f}")
         self.notifier.send(
             f"⚖️ Partial exit {trade.symbol} @ {partial_price:.2f}\n"
             f"PnL: {self._fmt_usdt(partial_pnl, signed=True)}\n"
@@ -315,14 +348,29 @@ class LiveRunner:
 
     def _close_trade(self, trade: OpenTradeState, current_price: float, exit_reason: str) -> None:
         close_side = "SELL" if trade.side == "buy" else "BUY"
-        order = self.order_executor.place_order(
-            self.symbol, close_side, trade.remaining_quantity, reference_price=current_price
+        try:
+            order = self.order_executor.place_order(
+                self.symbol, close_side, trade.remaining_quantity, reference_price=current_price
+            )
+        except Exception as exc:
+            # Nothing has been mutated yet -- the trade stays open and the close is retried
+            # on the next poll (the stop/target condition that triggered this is still true).
+            print(f"Close order failed, will retry next poll: {exc}")
+            self._log(f"Close order failed, will retry next poll: {exc}")
+            return
+
+        # filled_qty should equal trade.remaining_quantity for a market order on a liquid pair
+        # in virtually every case; PnL is computed on whatever actually filled either way. A
+        # partial fill leaving genuine residual quantity open at the exchange is not handled
+        # (the trade is always treated as fully closed below) -- an accepted, very low-probability
+        # gap at this bot's tiny position sizes, worth revisiting if position sizes scale up a lot.
+        exit_price, filled_qty, exit_fee = _extract_fill(
+            order, fallback_price=current_price, fallback_quantity=trade.remaining_quantity
         )
-        exit_price, exit_fee = _extract_fill(order, fallback_price=current_price)
         if trade.side == "buy":
-            pnl = trade.remaining_quantity * (exit_price - trade.entry_execution_price) - exit_fee
+            pnl = filled_qty * (exit_price - trade.entry_execution_price) - exit_fee
         else:
-            pnl = trade.remaining_quantity * (trade.entry_execution_price - exit_price) - exit_fee
+            pnl = filled_qty * (trade.entry_execution_price - exit_price) - exit_fee
 
         # The trade's true result includes the entry fee and any partial-exit profit
         # banked earlier in its lifetime, not just this final segment's fill.
@@ -339,7 +387,7 @@ class LiveRunner:
                 side=trade.side,
                 entry_price=trade.entry_execution_price,
                 exit_price=exit_price,
-                quantity=trade.remaining_quantity,
+                quantity=filled_qty,
                 pnl=pnl,
                 exit_reason=exit_reason,
                 opened_at=trade.opened_at,
