@@ -21,6 +21,7 @@ class OpenTradeState:
     entry_order_id: str
     opened_at: str
     realized_pnl_so_far: float = 0.0
+    total_fees: float = 0.0
 
 
 @dataclass
@@ -35,6 +36,7 @@ class ClosedTradeRecord:
     exit_reason: str
     opened_at: str
     closed_at: str
+    fees: float = 0.0
 
 
 class StateStore:
@@ -68,15 +70,25 @@ class StateStore:
             """CREATE TABLE IF NOT EXISTS trade_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT, side TEXT, entry_price REAL, exit_price REAL, quantity REAL,
-                pnl REAL, exit_reason TEXT, opened_at TEXT, closed_at TEXT
+                pnl REAL, exit_reason TEXT, opened_at TEXT, closed_at TEXT,
+                fees REAL DEFAULT 0.0
             )"""
         )
+        self._ensure_trade_history_columns()
         self.conn.commit()
 
     def _ensure_open_trade_columns(self) -> None:
         existing = {row[1] for row in self.conn.execute("PRAGMA table_info(open_trades)")}
         if "realized_pnl_so_far" not in existing:
             self.conn.execute("ALTER TABLE open_trades ADD COLUMN realized_pnl_so_far REAL DEFAULT 0.0")
+        if "total_fees" not in existing:
+            self.conn.execute("ALTER TABLE open_trades ADD COLUMN total_fees REAL DEFAULT 0.0")
+        self.conn.commit()
+
+    def _ensure_trade_history_columns(self) -> None:
+        existing = {row[1] for row in self.conn.execute("PRAGMA table_info(trade_history)")}
+        if "fees" not in existing:
+            self.conn.execute("ALTER TABLE trade_history ADD COLUMN fees REAL DEFAULT 0.0")
         self.conn.commit()
 
     def _ensure_pnl_columns(self) -> None:
@@ -146,8 +158,8 @@ class StateStore:
         cur = self.conn.execute(
             """INSERT INTO open_trades (symbol, side, entry_price, entry_execution_price, stop_loss,
                 take_profit, quantity, remaining_quantity, trailing_stop, partial_exit_done,
-                entry_order_id, opened_at, realized_pnl_so_far)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                entry_order_id, opened_at, realized_pnl_so_far, total_fees)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 trade.symbol,
                 trade.side,
@@ -162,6 +174,7 @@ class StateStore:
                 trade.entry_order_id,
                 trade.opened_at,
                 trade.realized_pnl_so_far,
+                trade.total_fees,
             ),
         )
         self.conn.commit()
@@ -202,6 +215,7 @@ class StateStore:
                     entry_order_id=data["entry_order_id"],
                     opened_at=data["opened_at"],
                     realized_pnl_so_far=data.get("realized_pnl_so_far") or 0.0,
+                    total_fees=data.get("total_fees") or 0.0,
                 )
             )
         return trades
@@ -209,8 +223,8 @@ class StateStore:
     def add_trade_history(self, record: ClosedTradeRecord) -> int:
         cur = self.conn.execute(
             """INSERT INTO trade_history (symbol, side, entry_price, exit_price, quantity,
-                pnl, exit_reason, opened_at, closed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                pnl, exit_reason, opened_at, closed_at, fees)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 record.symbol,
                 record.side,
@@ -221,6 +235,7 @@ class StateStore:
                 record.exit_reason,
                 record.opened_at,
                 record.closed_at,
+                record.fees,
             ),
         )
         self.conn.commit()
@@ -246,6 +261,7 @@ class StateStore:
                     exit_reason=data["exit_reason"],
                     opened_at=data["opened_at"],
                     closed_at=data["closed_at"],
+                    fees=data.get("fees") or 0.0,
                 )
             )
         return records

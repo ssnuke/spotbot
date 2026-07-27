@@ -110,6 +110,19 @@ class LiveRunner:
     def _log(self, message: str) -> None:
         self.telemetry.log(message)
 
+    def _render_table(self, headers: list[str], rows: list[list[str]]) -> str:
+        """Renders a compact, right-aligned monospace table for Telegram, wrapped in a
+        Markdown code block so column alignment survives Telegram's non-monospace default
+        font on mobile."""
+        widths = [len(h) for h in headers]
+        for row in rows:
+            for i, cell in enumerate(row):
+                widths[i] = max(widths[i], len(cell))
+        lines = ["  ".join(h.ljust(widths[i]) for i, h in enumerate(headers))]
+        for row in rows:
+            lines.append("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)))
+        return "```\n" + "\n".join(lines) + "\n```"
+
     def _mode_label(self) -> str:
         if isinstance(self.order_executor, LiveOrderExecutor):
             return "\U0001F534 LIVE — REAL MONEY"
@@ -233,6 +246,7 @@ class LiveRunner:
             entry_order_id=str(order.get("orderId", "")),
             opened_at=datetime.now(timezone.utc).isoformat(),
             realized_pnl_so_far=-entry_fee,
+            total_fees=entry_fee,
         )
         self.store.add_open_trade(trade_state)
         self.risk_manager.open_positions += 1
@@ -266,12 +280,14 @@ class LiveRunner:
         trade.partial_exit_done = True
         trade.trailing_stop = trailing_stop
         trade.realized_pnl_so_far += partial_pnl
+        trade.total_fees += partial_fee
         self.store.update_open_trade(
             trade.id,
             remaining_quantity=trade.remaining_quantity,
             partial_exit_done=1,
             trailing_stop=trailing_stop,
             realized_pnl_so_far=trade.realized_pnl_so_far,
+            total_fees=trade.total_fees,
         )
         self.store.add_trade_history(
             ClosedTradeRecord(
@@ -285,6 +301,7 @@ class LiveRunner:
                 exit_reason="partial_profit",
                 opened_at=trade.opened_at,
                 closed_at=datetime.now(timezone.utc).isoformat(),
+                fees=partial_fee,
             )
         )
         self.cumulative_pnl += partial_pnl
@@ -310,6 +327,7 @@ class LiveRunner:
         # The trade's true result includes the entry fee and any partial-exit profit
         # banked earlier in its lifetime, not just this final segment's fill.
         total_trade_pnl = trade.realized_pnl_so_far + pnl
+        total_trade_fees = trade.total_fees + exit_fee
 
         notional = trade.quantity * trade.entry_execution_price
         self.risk_manager.register_trade_result(total_trade_pnl, notional=notional)
@@ -326,6 +344,8 @@ class LiveRunner:
                 exit_reason=exit_reason,
                 opened_at=trade.opened_at,
                 closed_at=datetime.now(timezone.utc).isoformat(),
+                fees=exit_fee,  # this segment's own fee, matching pnl above -- the whole-trade
+                # total (entry + partial + this) is shown separately in the Telegram summary below
             )
         )
 
@@ -343,11 +363,23 @@ class LiveRunner:
             f"cumulative_pnl={self.cumulative_pnl:.2f}"
         )
         win_rate = (self.winning_trades / self.closed_trades * 100) if self.closed_trades else 0.0
+        table = self._render_table(
+            ["Field", "Value"],
+            [
+                ["Entry", f"{trade.entry_execution_price:.2f}"],
+                ["Exit", f"{exit_price:.2f}"],
+                ["Qty", f"{trade.quantity:.6f}"],
+                ["Fees", f"{total_trade_fees:.4f}"],
+                ["PnL", f"{total_trade_pnl:+.4f}"],
+            ],
+        )
         self.notifier.send(
-            f"✅ Closed {trade.side.upper()} {trade.symbol} @ {exit_price:.2f} ({exit_reason})\n"
-            f"Trade PnL: {self._fmt_usdt(total_trade_pnl, signed=True)}\n"
+            f"✅ Closed {trade.side.upper()} {trade.symbol} ({exit_reason})\n"
+            f"{table}\n"
+            f"Capital: {self._fmt_usdt(self.risk_manager._reference_capital())}\n"
             f"Running PnL: {self._fmt_usdt(self.cumulative_pnl, signed=True)} over {self.closed_trades} trades "
-            f"({win_rate:.1f}% win rate)"
+            f"({win_rate:.1f}% win rate)",
+            parse_mode="Markdown",
         )
 
     def _check_open_trades(self, current_price: float) -> None:
@@ -414,18 +446,31 @@ class LiveRunner:
             f"Avg PnL per closed trade: {self._fmt_usdt(avg_pnl, signed=True)}"
         )
 
+    _EXIT_REASON_ABBREVIATIONS = {
+        "take_profit": "TP",
+        "trailing_stop": "TS",
+        "partial_profit": "PE",
+    }
+
     def _recent_trades_message(self, limit: int = 5) -> str:
         records = self.store.list_recent_trade_history(limit=limit)
         if not records:
             return "No closed trades yet."
-        lines = [f"\U0001F4CB Last {len(records)} closed trade(s):"]
-        for record in records:
-            lines.append(
-                f"{record.side.upper()} {record.symbol} entry={record.entry_price:.2f} "
-                f"exit={record.exit_price:.2f} ({record.exit_reason}) "
-                f"pnl={self._fmt_usdt(record.pnl, signed=True)}"
-            )
-        return "\n".join(lines)
+
+        headers = ["Side", "Entry", "Exit", "Fees", "PnL", "Rsn"]
+        rows = [
+            [
+                record.side.upper(),
+                f"{record.entry_price:.2f}",
+                f"{record.exit_price:.2f}",
+                f"{record.fees:.3f}",
+                f"{record.pnl:+.2f}",
+                self._EXIT_REASON_ABBREVIATIONS.get(record.exit_reason, record.exit_reason),
+            ]
+            for record in records
+        ]
+        table = self._render_table(headers, rows)
+        return f"\U0001F4CB Last {len(records)} closed trade(s):\n{table}"
 
     def _send_started_message(self) -> None:
         mode = self._mode_label()
@@ -472,7 +517,7 @@ class LiveRunner:
             limit = 5
             if len(parts) > 1 and parts[1].isdigit():
                 limit = max(1, min(int(parts[1]), 20))
-            self.notifier.send(self._recent_trades_message(limit=limit))
+            self.notifier.send(self._recent_trades_message(limit=limit), parse_mode="Markdown")
         elif command == "/price":
             price = self.data_feed.get_latest_price(self.symbol)
             self.notifier.send(f"{self.symbol}: {price:.2f}" if price is not None else "Price unavailable right now.")

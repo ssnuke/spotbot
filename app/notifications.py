@@ -11,14 +11,18 @@ class TelegramNotifier:
         self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
         self.chat_id = chat_id or os.getenv("TELEGRAM_CHAT_ID")
 
-    def send(self, message: str) -> bool:
+    def send(self, message: str, parse_mode: Optional[str] = None) -> bool:
         if not self.bot_token or not self.chat_id:
             return False
+
+        payload = {"chat_id": self.chat_id, "text": message}
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
 
         try:
             response = requests.post(
                 f"https://api.telegram.org/bot{self.bot_token}/sendMessage",
-                json={"chat_id": self.chat_id, "text": message},
+                json=payload,
                 timeout=10,
             )
             response.raise_for_status()

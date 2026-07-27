@@ -49,7 +49,7 @@ class FakeNotifier:
         self.sent = []
         self._pending_updates = []
 
-    def send(self, message):
+    def send(self, message, parse_mode=None):
         self.sent.append(message)
         return True
 
@@ -144,6 +144,84 @@ def test_closing_a_trade_updates_cumulative_pnl_and_persists():
     assert history[0].side == "buy"
     assert history[0].exit_reason == "trailing_stop"
     assert history[0].pnl == runner.cumulative_pnl
+
+
+def test_closed_trade_message_renders_a_table_with_entry_exit_fees_pnl_capital():
+    notifier = FakeNotifier()
+    uptrend = [100.0 + i * 0.5 for i in range(60)]
+    data_feed = FakeDataFeed(_make_candles(uptrend + [uptrend[-1]]))
+    runner = _make_runner(
+        candles=[], data_feed=data_feed, notifier=notifier,
+        order_executor=SimulatedOrderExecutor(trade_fee_pct=0.001, slippage_pct=0.0),
+    )
+    runner.run_once()
+    open_trade = runner.store.list_open_trades()[0]
+
+    data_feed.candles = _make_candles(uptrend + [50.0, 50.0])  # crash triggers stop-loss close
+    notifier.sent.clear()
+    runner.run_once()
+
+    assert len(notifier.sent) == 1
+    message = notifier.sent[0]
+    assert "```" in message  # rendered as a Markdown table
+    assert f"{open_trade.entry_execution_price:.2f}" in message  # Entry
+    assert "50.00" in message  # Exit price (no slippage configured in this test)
+    assert "Fees" in message and "PnL" in message
+    assert "Capital:" in message
+
+    history = runner.store.list_recent_trade_history(limit=1)
+    assert history[0].fees > 0  # this segment's own exit fee was tracked, not left at the 0.0 default
+
+
+def test_closed_trade_fees_total_sums_entry_partial_and_exit_fees():
+    # The single "Closed trade" notification's Fees row is the WHOLE trade's total (entry +
+    # partial + final exit fee combined) -- a different convention from /history, where each
+    # row shows only that segment's own fee. Both need to independently be correct.
+    notifier = FakeNotifier()
+    uptrend = [100.0 + i * 0.5 for i in range(60)]
+    data_feed = FakeDataFeed(_make_candles(uptrend + [uptrend[-1]]))
+    runner = _make_runner(
+        candles=[], data_feed=data_feed, notifier=notifier,
+        order_executor=SimulatedOrderExecutor(trade_fee_pct=0.001, slippage_pct=0.0),
+        risk_config=RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_open_positions=1),
+    )
+    runner.run_once()
+    entry_fee = runner.store.list_open_trades()[0].total_fees
+    assert entry_fee > 0
+
+    data_feed.candles = _make_candles(uptrend + [131.0, 131.0])  # +1%+ -> partial exit fires
+    runner.run_once()
+    partial_fee = runner.store.list_open_trades()[0].total_fees - entry_fee
+    assert partial_fee > 0
+
+    notifier.sent.clear()
+    data_feed.candles = _make_candles(uptrend + [131.0, 128.7, 128.7])  # pullback -> trailing-stop close
+    runner.run_once()
+
+    fees_line = next(line for line in notifier.sent[0].split("\n") if line.startswith("Fees"))
+    displayed_total_fees = float(fees_line.split()[1])
+    final_segment_fee = runner.store.list_recent_trade_history(limit=1)[0].fees
+    assert displayed_total_fees == pytest.approx(entry_fee + partial_fee + final_segment_fee, abs=1e-4)
+
+
+def test_history_table_shows_fees_and_abbreviated_exit_reason():
+    notifier = FakeNotifier()
+    runner = _make_runner(_make_candles([100.0] * 5), notifier=notifier)
+    runner.store.add_trade_history(
+        ClosedTradeRecord(
+            id=None, symbol="BTC/USDT", side="buy", entry_price=100.0, exit_price=103.0,
+            quantity=1.0, pnl=3.0, exit_reason="take_profit",
+            opened_at="2026-07-23T00:00:00", closed_at="2026-07-23T01:00:00", fees=0.15,
+        )
+    )
+
+    runner._handle_command("/history")
+
+    message = notifier.sent[0]
+    assert "0.150" in message  # fees column
+    assert "+3.00" in message  # pnl column
+    assert "TP" in message  # abbreviated take_profit
+    assert "take_profit" not in message  # abbreviation replaced the full word
 
 
 def test_entry_fee_is_deducted_from_cumulative_pnl_immediately():
@@ -248,9 +326,11 @@ def test_history_command_defaults_to_five_and_shows_most_recent_first():
     runner._handle_command("/history")
 
     assert len(notifier.sent) == 1
-    assert "Last 5 closed trade" in notifier.sent[0]
-    lines = notifier.sent[0].split("\n")
-    assert "pnl=+6.00" in lines[1]  # most recently added trade first
+    message = notifier.sent[0]
+    assert "Last 5 closed trade" in message
+    assert "```" in message  # rendered as a Markdown code-block table
+    # most recently added trade (pnl=6.0) must appear before the older ones
+    assert message.index("+6.00") < message.index("+5.00") < message.index("+4.00")
 
 
 def test_history_command_accepts_custom_limit():

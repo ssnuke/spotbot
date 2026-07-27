@@ -115,3 +115,47 @@ def test_trade_history_returns_most_recent_first_and_respects_limit():
 def test_trade_history_empty_returns_empty_list():
     store = StateStore(":memory:")
     assert store.list_recent_trade_history(limit=5) == []
+
+
+def test_open_trade_tracks_total_fees():
+    store = StateStore(":memory:")
+    trade = OpenTradeState(
+        id=None,
+        symbol="BTC/USDT",
+        side="buy",
+        entry_price=100.0,
+        entry_execution_price=100.0,
+        stop_loss=99.0,
+        take_profit=103.0,
+        quantity=1.0,
+        remaining_quantity=1.0,
+        trailing_stop=99.0,
+        partial_exit_done=False,
+        entry_order_id="1",
+        opened_at="2026-07-23T00:00:00",
+        total_fees=0.5,
+    )
+    trade_id = store.add_open_trade(trade)
+
+    open_trades = store.list_open_trades()
+    assert open_trades[0].total_fees == 0.5
+
+    store.update_open_trade(trade_id, total_fees=0.8)
+    assert store.list_open_trades()[0].total_fees == 0.8
+
+
+def test_trade_history_tracks_fees():
+    store = StateStore(":memory:")
+    store.add_trade_history(_make_closed_trade(pnl=5.0, closed_at="2026-07-23T01:00:00"))
+
+    records = store.list_recent_trade_history(limit=1)
+    assert records[0].fees == 0.0  # default when not specified
+
+    record_with_fees = ClosedTradeRecord(
+        id=None, symbol="BTC/USDT", side="buy", entry_price=100.0, exit_price=101.0,
+        quantity=1.0, pnl=5.0, exit_reason="take_profit",
+        opened_at="2026-07-23T00:00:00", closed_at="2026-07-23T02:00:00", fees=0.35,
+    )
+    store.add_trade_history(record_with_fees)
+    records = store.list_recent_trade_history(limit=1)
+    assert records[0].fees == 0.35
