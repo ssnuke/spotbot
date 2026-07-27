@@ -123,6 +123,27 @@ def _print_table(headers: list[str], rows: list[list[str]]) -> None:
     print(separator)
 
 
+def print_effective_config(config: BacktestConfig, capital: float) -> None:
+    print("\n=== EFFECTIVE CONFIG (this run) ===\n")
+    _print_table(
+        ["Setting", "Value"],
+        [
+            ["Starting capital", _fmt_money(capital)],
+            ["Compounding enabled", "YES" if config.compounding_enabled else "no"],
+            ["Risk per trade", _fmt_pct(config.risk_per_trade_pct)],
+            ["Max position size", _fmt_pct(config.max_position_pct)],
+            ["Max open positions", str(config.max_open_positions)],
+            ["Max trades/day", str(config.max_trades_per_day)],
+            ["Max daily loss", _fmt_pct(config.max_daily_loss_pct)],
+            ["Max consecutive losses", str(config.max_consecutive_losses) if config.max_consecutive_losses else "disabled"],
+            ["Cooldown period (ticks)", str(config.cooldown_period) if config.max_consecutive_losses else "n/a"],
+            ["Min entry spacing (ticks)", str(config.min_entry_spacing_ticks) if config.min_entry_spacing_ticks else "disabled"],
+            ["HTF regime filter", f"enabled ({config.htf_filter_mode})" if config.htf_filter_enabled else "disabled"],
+            ["Stop/target mode", "ATR-based" if config.use_atr_stop else "fixed %"],
+        ],
+    )
+
+
 def print_backtest_report(
     report: BacktestReport,
     result: BacktestResult,
@@ -310,6 +331,7 @@ def main() -> None:
             htf_short_period=config.backtest.htf_short_period,
             htf_long_period=config.backtest.htf_long_period,
         )
+        print_effective_config(backtest_config, capital)
         telemetry = Telemetry(enabled=True, logger=print if args.verbose else None)
         backtester = Backtester(config=backtest_config, strategy_config=strategy_config, telemetry=telemetry)
         result = backtester.run(candles)

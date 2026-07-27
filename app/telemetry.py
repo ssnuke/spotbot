@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, List, Optional
 
 
@@ -15,7 +15,7 @@ class Telemetry:
         if not self.enabled:
             return
 
-        formatted = f"[{datetime.utcnow().isoformat()}] {message}"
+        formatted = f"[{datetime.now(timezone.utc).isoformat()}] {message}"
         self.entries.append(formatted)
         if self.logger:
             self.logger(formatted)

@@ -17,8 +17,7 @@ SSH in as root (or whatever the provider gives you) and create a dedicated
 non-root user to run the bot under — don't run it as root:
 
 ```bash
-
-
+adduser botuser
 usermod -aG sudo botuser   # optional, only if you need sudo later
 su - botuser
 ```
@@ -198,7 +197,7 @@ After pulling code changes or editing `config.json`/`.env`, always
 `sudo systemctl restart trading-bot` to pick them up — the running process
 won't reload them on its own.
 
-## 11. Back up the state file
+## 12. Back up the state file
 
 `live_state.db` is the only record of cumulative PnL, win/loss counts, and any
 open positions if the server is ever lost. Back it up periodically:
@@ -210,7 +209,7 @@ scp botuser@<server-ip>:~/trading-bot/live_state.db ./backups/live_state-$(date 
 Consider a small cron job on your local machine (or another server) to do this
 daily rather than relying on remembering to do it manually.
 
-## 12. Basic security hardening (recommended, not required to run)
+## 13. Basic security hardening (recommended, not required to run)
 
 - Disable SSH password auth, use key-based auth only.
 - Set up `ufw` and only allow SSH (and nothing else — this bot makes outbound

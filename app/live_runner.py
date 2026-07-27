@@ -375,7 +375,8 @@ class LiveRunner:
             f"Closed trades: {self.closed_trades} (W:{self.winning_trades} L:{self.losing_trades}, "
             f"{win_rate:.1f}% win rate)\n"
             f"Cumulative PnL: {self._fmt_usdt(self.cumulative_pnl, signed=True)}\n"
-            f"Capital: {self._fmt_usdt(self.risk_manager._reference_capital())}\n"
+            f"Capital: {self._fmt_usdt(self.risk_manager._reference_capital())}"
+            f"{' (compounding ON)' if self.risk_manager.config.compounding_enabled else ''}\n"
             f"Daily trades used: {self.risk_manager.daily_trades}/{self.risk_manager.config.max_trades_per_day}\n"
             f"Cooldown remaining: {self.risk_manager.cooldown_remaining} ticks"
         )
@@ -429,7 +430,8 @@ class LiveRunner:
         message = (
             f"{header}\n"
             f"Symbol: {self.symbol}\nTimeframe: {self.timeframe}\nMode: {mode}\n"
-            f"Capital: {self._fmt_usdt(self.risk_manager._reference_capital())}\n"
+            f"Capital: {self._fmt_usdt(self.risk_manager._reference_capital())}"
+            f"{' (compounding ON)' if self.risk_manager.config.compounding_enabled else ''}\n"
             f"Cumulative PnL so far: {self._fmt_usdt(self.cumulative_pnl, signed=True)} over {self.closed_trades} trades\n"
             f"Open positions recovered: {len(open_trades)}"
         )
