@@ -220,6 +220,63 @@ daily rather than relying on remembering to do it manually.
   ```
 - Keep `.env` permissions locked down: `chmod 600 .env`.
 
+## 14. Going live with real money
+
+Everything above runs in `simulated` mode by default: no exchange account, no
+real orders, fills happen locally against live prices. `execution_mode: "live"`
+places REAL orders with REAL funds on Binance. Don't skip any step here —
+this is the one part of the project where a bug costs real money instead of a
+wrong number in a report.
+
+1. **Create a trading-only API key.** In Binance's API Management settings,
+   create a new key with **trading permission only** — leave withdrawals
+   disabled. If your provider's IP is static, IP-whitelist the key to it. Never
+   reuse your Spot Testnet key/secret here; they're for a completely different
+   system.
+
+2. **Add the live credentials to `.env`**, as their own distinct variables
+   (kept separate from the testnet ones on purpose, so a copy-paste mistake
+   can't send real orders with testnet credentials or vice versa):
+
+   ```text
+   BINANCE_LIVE_API_KEY=your_real_key
+   BINANCE_LIVE_API_SECRET=your_real_secret
+   ```
+
+   The bot refuses to start in `live` mode if this key can withdraw funds, or
+   can't trade at all — that's checked automatically on every startup.
+
+3. **Prove the new code path on Testnet first.** The `live` order-execution
+   code shares its implementation with the already-proven `testnet` path, but
+   validate it end to end before ever pointing it at real funds: temporarily
+   set `"execution_mode": "testnet"` in `config.json`, restart, and confirm
+   orders place and fill correctly (`/status`, `/trades`, and the Telegram
+   open/close notifications should all look normal) for at least a few real
+   trade cycles.
+
+4. **Start with a small trial amount, not your full intended capital.**
+   Backtest and testnet validation don't fully capture real execution quirks
+   (fills, real fees, rejected orders). Set `"capital"` in the `risk` section
+   of `config.json` to something you're fully comfortable being at risk while
+   you observe it — $50-100, not $300+ — and only scale up after it's proven
+   itself live for a week or two.
+
+5. **Set `"execution_mode": "live"`** in `config.json`'s `"live"` section and
+   restart (`sudo systemctl restart trading-bot`). Watch the startup message
+   (Telegram and `journalctl -u trading-bot -f`) — it will clearly say
+   `Mode: 🔴 LIVE — REAL MONEY`. If you see `testnet` or `simulated` instead,
+   the config change didn't take (check you edited the right file and
+   restarted).
+
+6. **Watch it closely for the first day.** Errors are now always printed to
+   the journal (not just with `--verbose`), so `journalctl -u trading-bot -f`
+   is your primary window into anything going wrong.
+
+`market_type` (also in the `live` section) only supports `"spot"` today.
+Binance Futures is a different, higher-risk product (leverage, liquidation,
+funding rates) with its own API — the config field is reserved for it, but
+nothing beyond spot is implemented.
+
 ## Updating the bot later
 
 ```bash

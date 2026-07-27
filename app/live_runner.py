@@ -9,7 +9,7 @@ from app.binance_client import SymbolFilters, round_step_size
 from app.data_feed import BinanceDataFeed
 from app.fx import get_usd_inr_rate
 from app.notifications import TelegramNotifier
-from app.order_executor import OrderExecutor, SimulatedOrderExecutor
+from app.order_executor import LiveOrderExecutor, OrderExecutor, SimulatedOrderExecutor, TestnetOrderExecutor
 from app.risk_manager import RiskConfig, RiskManager
 from app.state_store import ClosedTradeRecord, OpenTradeState, StateStore
 from app.strategy import TAEStrategy, TAEStrategyConfig
@@ -110,6 +110,13 @@ class LiveRunner:
     def _log(self, message: str) -> None:
         self.telemetry.log(message)
 
+    def _mode_label(self) -> str:
+        if isinstance(self.order_executor, LiveOrderExecutor):
+            return "\U0001F534 LIVE — REAL MONEY"
+        if isinstance(self.order_executor, TestnetOrderExecutor):
+            return "testnet"
+        return "simulated (no real orders)"
+
     def _fmt_usdt(self, amount: float, signed: bool = False) -> str:
         number = f"{amount:+,.2f}" if signed else f"{amount:,.2f}"
         rate = self._fx_rate_provider()
@@ -194,6 +201,7 @@ class LiveRunner:
         if quantity <= 0 or quantity * entry_price < self._symbol_filters.min_notional:
             self._log(f"Order below exchange minimums, skipping: qty={quantity}")
             self.risk_manager.allocated_capital = max(0.0, self.risk_manager.allocated_capital - plan.notional)
+            self.risk_manager.daily_trades = max(0, self.risk_manager.daily_trades - 1)
             self._save_risk_state()
             return
 
@@ -371,6 +379,7 @@ class LiveRunner:
         return (
             f"{prefix}\n"
             f"Symbol: {self.symbol}\n"
+            f"Mode: {self._mode_label()}\n"
             f"Open positions: {len(open_trades)}\n"
             f"Closed trades: {self.closed_trades} (W:{self.winning_trades} L:{self.losing_trades}, "
             f"{win_rate:.1f}% win rate)\n"
@@ -419,7 +428,7 @@ class LiveRunner:
         return "\n".join(lines)
 
     def _send_started_message(self) -> None:
-        mode = "simulated (no real orders)" if isinstance(self.order_executor, SimulatedOrderExecutor) else "testnet"
+        mode = self._mode_label()
         open_trades = self.store.list_open_trades()
         resumed = self.closed_trades > 0 or bool(open_trades)
         header = f"\U0001F7E2 Bot started ({'resumed' if resumed else 'fresh'} state)"
@@ -538,6 +547,9 @@ class LiveRunner:
             try:
                 self._poll_commands()
             except Exception as exc:
+                # Always printed (not just via self._log, which is silent without --verbose) so
+                # errors are never invisible in journalctl once real money is involved.
+                print(f"Error polling Telegram commands: {exc}")
                 self._log(f"Error polling Telegram commands: {exc}")
 
             now = time.time()
@@ -546,6 +558,7 @@ class LiveRunner:
                 try:
                     self.run_once()
                 except Exception as exc:  # keep the loop alive across transient API errors
+                    print(f"Error in run_once: {exc}")
                     self._log(f"Error in run_once: {exc}")
                 self.risk_manager.tick()
 

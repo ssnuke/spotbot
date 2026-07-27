@@ -58,7 +58,8 @@
     "partial_exit_qty_pct": 0.25,
     "trailing_stop_pct": 0.005,
     "db_path": "live_state.db",
-    "execution_mode": "simulated",
+    "execution_mode": "testnet",
+    "market_type": "spot",
     "summary_interval_seconds": 3600,
     "command_poll_interval_seconds": 5
   },

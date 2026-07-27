@@ -34,23 +34,16 @@ def _exponent(value: float) -> int:
     return -len(text.split(".")[1])
 
 
-class BinanceTestnetClient:
-    """Signed REST client for Binance's public Spot Testnet (fake funds, real exchange matching)."""
+class BinanceSpotClient:
+    """Signed REST client for Binance's Spot API surface. Binance Spot Testnet mirrors
+    the production API exactly, so this same client works against either -- only the
+    base URL and credentials differ, which is what BinanceTestnetClient/BinanceLiveClient
+    below configure."""
 
-    def __init__(
-        self,
-        api_key: Optional[str] = None,
-        api_secret: Optional[str] = None,
-        base_url: Optional[str] = None,
-    ):
-        self.api_key = api_key or os.getenv("BINANCE_API_KEY")
-        self.api_secret = api_secret or os.getenv("BINANCE_API_SECRET")
-        self.base_url = base_url or os.getenv("BINANCE_TESTNET_BASE_URL", "https://testnet.binance.vision")
-        if not self.api_key or not self.api_secret:
-            raise ValueError(
-                "BINANCE_API_KEY and BINANCE_API_SECRET must be set (generate a free key at "
-                "https://testnet.binance.vision/)"
-            )
+    def __init__(self, api_key: str, api_secret: str, base_url: str):
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.base_url = base_url
 
     def _sign(self, params: dict) -> str:
         query = urlencode(params)
@@ -99,3 +92,59 @@ class BinanceTestnetClient:
 
     def get_account(self) -> dict:
         return self._signed_request("GET", "/api/v3/account", {})
+
+
+class BinanceTestnetClient(BinanceSpotClient):
+    """Signed REST client for Binance's public Spot Testnet (fake funds, real exchange matching)."""
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        api_secret: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ):
+        api_key = api_key or os.getenv("BINANCE_API_KEY")
+        api_secret = api_secret or os.getenv("BINANCE_API_SECRET")
+        base_url = base_url or os.getenv("BINANCE_TESTNET_BASE_URL", "https://testnet.binance.vision")
+        if not api_key or not api_secret:
+            raise ValueError(
+                "BINANCE_API_KEY and BINANCE_API_SECRET must be set (generate a free key at "
+                "https://testnet.binance.vision/)"
+            )
+        super().__init__(api_key, api_secret, base_url)
+
+
+class BinanceLiveClient(BinanceSpotClient):
+    """Signed REST client for Binance's production Spot exchange -- REAL funds, REAL orders.
+    Deliberately reads separate BINANCE_LIVE_* env vars (not the BINANCE_API_KEY/SECRET used
+    for testnet) so a .env mistake can't point real money at the wrong credentials."""
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        api_secret: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ):
+        api_key = api_key or os.getenv("BINANCE_LIVE_API_KEY")
+        api_secret = api_secret or os.getenv("BINANCE_LIVE_API_SECRET")
+        base_url = base_url or os.getenv("BINANCE_LIVE_BASE_URL", "https://api.binance.com")
+        if not api_key or not api_secret:
+            raise ValueError(
+                "BINANCE_LIVE_API_KEY and BINANCE_LIVE_API_SECRET must be set to trade with "
+                "real funds on Binance. Create a trading-only API key (withdrawals disabled) "
+                "in your Binance account settings."
+            )
+        super().__init__(api_key, api_secret, base_url)
+
+    def assert_safe_to_trade(self) -> None:
+        """Refuses to proceed unless the API key can trade and, critically, cannot withdraw.
+        A real-money bot should never hold a withdrawal-capable key -- if this account's key
+        is scoped too broadly, fail loudly at startup rather than trade with it anyway."""
+        account = self.get_account()
+        if not account.get("canTrade", False):
+            raise ValueError("This Binance API key does not have trading permission enabled.")
+        if account.get("canWithdraw", False):
+            raise ValueError(
+                "This Binance API key has WITHDRAWAL permission enabled -- refusing to start. "
+                "Create a key with trading permission only, withdrawals disabled, for live trading."
+            )

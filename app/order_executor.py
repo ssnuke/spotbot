@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Protocol
 
-from app.binance_client import BinanceTestnetClient
+from app.binance_client import BinanceLiveClient, BinanceTestnetClient
 from app.data_feed import BinanceDataFeed
 
 
@@ -45,6 +45,16 @@ class TestnetOrderExecutor:
     """Places real (fake-funds) orders against Binance's Spot Testnet matching engine."""
 
     client: BinanceTestnetClient
+
+    def place_order(self, symbol: str, side: str, quantity: float, reference_price: float) -> dict:
+        return self.client.place_market_order(symbol, side, quantity)
+
+
+@dataclass
+class LiveOrderExecutor:
+    """Places REAL orders with REAL funds on Binance's production spot exchange."""
+
+    client: BinanceLiveClient
 
     def place_order(self, symbol: str, side: str, quantity: float, reference_price: float) -> dict:
         return self.client.place_market_order(symbol, side, quantity)

@@ -1,4 +1,29 @@
-from app.order_executor import SimulatedOrderExecutor
+from app.order_executor import LiveOrderExecutor, SimulatedOrderExecutor, TestnetOrderExecutor
+
+
+class FakeBinanceClient:
+    def __init__(self):
+        self.calls = []
+
+    def place_market_order(self, symbol, side, quantity):
+        self.calls.append((symbol, side, quantity))
+        return {"orderId": "FAKE", "fills": [{"qty": str(quantity), "price": "100.0", "commission": "0.01"}]}
+
+
+def test_testnet_executor_delegates_to_client():
+    client = FakeBinanceClient()
+    executor = TestnetOrderExecutor(client=client)
+    order = executor.place_order("SOL/USDT", "BUY", quantity=1.5, reference_price=76.0)
+    assert client.calls == [("SOL/USDT", "BUY", 1.5)]
+    assert order["orderId"] == "FAKE"
+
+
+def test_live_executor_delegates_to_client():
+    client = FakeBinanceClient()
+    executor = LiveOrderExecutor(client=client)
+    order = executor.place_order("SOL/USDT", "SELL", quantity=0.75, reference_price=76.0)
+    assert client.calls == [("SOL/USDT", "SELL", 0.75)]
+    assert order["orderId"] == "FAKE"
 
 
 def test_buy_order_applies_positive_slippage():

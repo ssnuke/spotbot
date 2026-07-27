@@ -11,7 +11,7 @@ from app.backtester import BacktestConfig, Backtester, BacktestResult, BacktestR
 from app.config import AppConfig, load_app_config
 from app.data_feed import BinanceDataFeed
 from app.live_runner import LiveRunner
-from app.order_executor import SimulatedOrderExecutor, TestnetOrderExecutor
+from app.order_executor import LiveOrderExecutor, SimulatedOrderExecutor, TestnetOrderExecutor
 from app.risk_manager import RiskConfig
 from app.strategy import TAEStrategyConfig
 from app.telemetry import Telemetry
@@ -247,10 +247,11 @@ def main() -> None:
     parser.add_argument("--export-trades", help="Path to write the full trade log as CSV")
     parser.add_argument(
         "--execution-mode",
-        choices=["simulated", "testnet"],
+        choices=["simulated", "testnet", "live"],
         default=None,
         help="Live bot order execution: 'simulated' fills locally against live prices with no "
-        "exchange account; 'testnet' places real (fake-funds) orders on Binance Spot Testnet. "
+        "exchange account; 'testnet' places real (fake-funds) orders on Binance Spot Testnet; "
+        "'live' places REAL orders with REAL funds on Binance. "
         "Defaults to config.json's live.execution_mode (simulated) if not given.",
     )
     args = parser.parse_args()
@@ -353,6 +354,14 @@ def main() -> None:
 
     symbol = args.symbol or config.symbol
     execution_mode = args.execution_mode or config.live.execution_mode
+    market_type = config.live.market_type
+    if market_type != "spot":
+        print(
+            f"market_type '{market_type}' is not implemented yet -- only 'spot' is supported. "
+            "(This is a reserved config field for possible future Binance Futures support.)"
+        )
+        return
+
     symbol_filters = None
     if execution_mode == "testnet":
         from app.binance_client import BinanceTestnetClient
@@ -364,6 +373,20 @@ def main() -> None:
             return
         order_executor = TestnetOrderExecutor(client=testnet_client)
         symbol_filters = testnet_client.get_symbol_filters(symbol)
+    elif execution_mode == "live":
+        from app.binance_client import BinanceLiveClient
+
+        try:
+            live_client = BinanceLiveClient()
+            live_client.assert_safe_to_trade()
+        except ValueError as error:
+            print(f"Cannot start live bot: {error}")
+            return
+        order_executor = LiveOrderExecutor(client=live_client)
+        symbol_filters = live_client.get_symbol_filters(symbol)
+        print("\n" + "=" * 60)
+        print("  WARNING: execution_mode=live -- REAL MONEY, REAL ORDERS")
+        print("=" * 60 + "\n")
     else:
         order_executor = SimulatedOrderExecutor(
             trade_fee_pct=config.backtest.trade_fee_pct,

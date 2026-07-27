@@ -79,6 +79,7 @@ class LiveConfigData:
     trailing_stop_pct: float = 0.005
     db_path: str = "live_state.db"
     execution_mode: str = "simulated"
+    market_type: str = "spot"  # "spot" is the only implemented value; "futures" is reserved
     summary_interval_seconds: int = 3600
     command_poll_interval_seconds: int = 5
 

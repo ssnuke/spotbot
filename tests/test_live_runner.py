@@ -1,10 +1,18 @@
 import pytest
 
+from app.binance_client import SymbolFilters
 from app.live_runner import LiveRunner
-from app.order_executor import SimulatedOrderExecutor
+from app.order_executor import LiveOrderExecutor, SimulatedOrderExecutor, TestnetOrderExecutor
 from app.risk_manager import RiskConfig, RiskManager
 from app.state_store import ClosedTradeRecord, OpenTradeState, StateStore
 from app.telemetry import Telemetry
+
+
+class FakeBinanceClient:
+    """Stands in for BinanceTestnetClient/BinanceLiveClient in tests -- no real network calls."""
+
+    def place_market_order(self, symbol, side, quantity):
+        return {"orderId": "FAKE", "fills": [{"qty": str(quantity), "price": "100.0", "commission": "0.0"}]}
 
 
 def _make_closed_trade_record(pnl):
@@ -466,3 +474,51 @@ def test_restore_state_reloads_equity_and_peak_equity():
     assert runner.risk_manager.peak_equity == 52000.0
     # (52000 - 46000) / 52000 ~= 11.5% drawdown, over the 5% limit -> new trades blocked
     assert not runner.risk_manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)
+
+
+def test_mode_label_is_simulated_by_default():
+    runner = _make_runner(_make_candles([100.0] * 5))
+    assert runner._mode_label() == "simulated (no real orders)"
+
+
+def test_mode_label_is_testnet_when_testnet_executor_used():
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        order_executor=TestnetOrderExecutor(client=FakeBinanceClient()),
+    )
+    assert runner._mode_label() == "testnet"
+
+
+def test_mode_label_is_live_real_money_when_live_executor_used():
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        order_executor=LiveOrderExecutor(client=FakeBinanceClient()),
+    )
+    label = runner._mode_label()
+    assert "LIVE" in label
+    assert "REAL MONEY" in label
+
+
+def test_status_and_started_messages_show_mode():
+    notifier = FakeNotifier()
+    runner = _make_runner(_make_candles([100.0] * 5), notifier=notifier)
+
+    assert "Mode: simulated" in runner._status_message()
+
+    runner._send_started_message()
+    assert "Mode: simulated" in notifier.sent[-1]
+
+
+def test_daily_trades_not_consumed_when_order_below_exchange_minimum():
+    # A min_notional far above any position this strategy would ever size forces the
+    # below-exchange-minimum skip path in _open_position.
+    closes = [100.0 + i * 0.5 for i in range(60)]
+    runner = _make_runner(
+        _make_candles(closes),
+        symbol_filters=SymbolFilters(step_size=0.000001, tick_size=0.01, min_notional=1_000_000.0),
+    )
+
+    runner.run_once()
+
+    assert runner.store.list_open_trades() == []  # order was skipped, never actually opened
+    assert runner.risk_manager.daily_trades == 0  # and didn't silently eat a daily-trade slot
