@@ -36,7 +36,8 @@
     "htf_filter_enabled": false,
     "htf_filter_mode": "both",
     "htf_short_period": 9,
-    "htf_long_period": 21
+    "htf_long_period": 21,
+    "long_only": true
   },
   "strategy": {
     "short_window": 5,
@@ -60,6 +61,7 @@
     "db_path": "live_state.db",
     "execution_mode": "live",
     "market_type": "spot",
+    "long_only": true,
     "summary_interval_seconds": 3600,
     "command_poll_interval_seconds": 5
   },

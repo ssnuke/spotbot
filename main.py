@@ -139,6 +139,7 @@ def print_effective_config(config: BacktestConfig, capital: float) -> None:
             ["Cooldown period (ticks)", str(config.cooldown_period) if config.max_consecutive_losses else "n/a"],
             ["Min entry spacing (ticks)", str(config.min_entry_spacing_ticks) if config.min_entry_spacing_ticks else "disabled"],
             ["HTF regime filter", f"enabled ({config.htf_filter_mode})" if config.htf_filter_enabled else "disabled"],
+            ["Long only (no shorts)", "YES" if config.long_only else "no"],
             ["Stop/target mode", "ATR-based" if config.use_atr_stop else "fixed %"],
         ],
     )
@@ -331,6 +332,7 @@ def main() -> None:
             htf_filter_mode=config.backtest.htf_filter_mode,
             htf_short_period=config.backtest.htf_short_period,
             htf_long_period=config.backtest.htf_long_period,
+            long_only=config.backtest.long_only,
         )
         print_effective_config(backtest_config, capital)
         telemetry = Telemetry(enabled=True, logger=print if args.verbose else None)
@@ -423,6 +425,7 @@ def main() -> None:
             partial_exit_qty_pct=config.live.partial_exit_qty_pct,
             trailing_stop_pct=config.live.trailing_stop_pct,
             db_path=config.live.db_path,
+            long_only=config.live.long_only,
             summary_interval_seconds=config.live.summary_interval_seconds,
             command_poll_interval_seconds=config.live.command_poll_interval_seconds,
             telemetry=Telemetry(enabled=True, logger=print if args.verbose else None),

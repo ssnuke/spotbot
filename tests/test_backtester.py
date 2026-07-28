@@ -8,6 +8,20 @@ def test_backtester_initializes_with_defaults():
     assert backtester.config.timeframe == "1m"
 
 
+def test_long_only_skips_sell_signals():
+    # A monotonic downtrend only ever produces sell (short) signals from MomentumStrategy.
+    downtrend = [100.0 - i * 0.5 for i in range(30)]
+    candles = [[0, 0, 0, 0, p, p] for p in downtrend]
+
+    result_both_directions = Backtester(config=BacktestConfig(start_capital=10000.0, timeframe="1m")).run(candles)
+    assert any(t.side == "sell" for t in result_both_directions.trades)
+
+    result_long_only = Backtester(
+        config=BacktestConfig(start_capital=10000.0, timeframe="1m", long_only=True)
+    ).run(candles)
+    assert result_long_only.trades == []  # every signal here was a sell, all filtered out
+
+
 def test_backtester_applies_fees_and_slippage():
     config = BacktestConfig(
         start_capital=10000.0,

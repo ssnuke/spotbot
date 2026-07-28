@@ -53,6 +53,7 @@ class BacktestConfigData:
     htf_filter_mode: str = "both"
     htf_short_period: int = 9
     htf_long_period: int = 21
+    long_only: bool = False  # skip sell/short signals -- required for real spot execution, which can't short
 
 
 @dataclass
@@ -80,6 +81,7 @@ class LiveConfigData:
     db_path: str = "live_state.db"
     execution_mode: str = "simulated"
     market_type: str = "spot"  # "spot" is the only implemented value; "futures" is reserved
+    long_only: bool = False  # skip sell/short signals -- required for real spot execution, which can't short
     summary_interval_seconds: int = 3600
     command_poll_interval_seconds: int = 5
 

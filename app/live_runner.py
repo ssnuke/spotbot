@@ -67,6 +67,7 @@ class LiveRunner:
         partial_exit_qty_pct: float = 0.5,
         trailing_stop_pct: float = 0.005,
         db_path: str = "live_state.db",
+        long_only: bool = False,
         summary_interval_seconds: int = 3600,
         command_poll_interval_seconds: int = 5,
         notifier: Optional[TelegramNotifier] = None,
@@ -87,6 +88,7 @@ class LiveRunner:
         self.partial_exit_profit_pct = partial_exit_profit_pct
         self.partial_exit_qty_pct = partial_exit_qty_pct
         self.trailing_stop_pct = trailing_stop_pct
+        self.long_only = long_only
         self.summary_interval_seconds = summary_interval_seconds
         self.command_poll_interval_seconds = command_poll_interval_seconds
 
@@ -625,6 +627,10 @@ class LiveRunner:
         signal = self.strategy.generate_signal(prices, self.symbol)
         if signal is None:
             self._log("No trading signal generated")
+            return
+
+        if self.long_only and signal.side == "sell":
+            self._log("Sell signal skipped: long_only is enabled (spot can't short)")
             return
 
         self._open_position(signal, entry_price=current_price)

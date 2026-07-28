@@ -140,6 +140,22 @@ def test_open_position_persists_and_updates_risk_manager():
     assert runner.risk_manager.allocated_capital > 0
 
 
+def test_long_only_skips_sell_signals_and_never_opens_a_short():
+    # Strong sustained downtrend so TAEStrategy fires a sell signal on the last candle --
+    # spot accounts can't short, so this must never actually open a position.
+    closes = [100.0 - i * 0.5 for i in range(60)]
+
+    runner_both_directions = _make_runner(_make_candles(closes))
+    runner_both_directions.run_once()
+    assert runner_both_directions.risk_manager.open_positions == 1
+    assert runner_both_directions.store.list_open_trades()[0].side == "sell"
+
+    runner_long_only = _make_runner(_make_candles(closes), long_only=True)
+    runner_long_only.run_once()
+    assert runner_long_only.risk_manager.open_positions == 0
+    assert runner_long_only.store.list_open_trades() == []
+
+
 def test_failed_order_placement_releases_reserved_capital_and_daily_trade_slot():
     closes = [100.0 + i * 0.5 for i in range(60)]
     runner = _make_runner(_make_candles(closes), order_executor=FailingOrderExecutor())

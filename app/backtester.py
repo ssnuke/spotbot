@@ -91,6 +91,7 @@ class BacktestConfig:
     htf_filter_mode: str = "both"
     htf_short_period: int = 9
     htf_long_period: int = 21
+    long_only: bool = False  # skip sell/short signals -- required for real spot execution, which can't short
     telemetry_enabled: bool = True
 
 
@@ -157,6 +158,9 @@ class Backtester:
             window = prices[: index + 1]
             signal = self.strategy.generate_signal(window, symbol)
             if signal is None:
+                continue
+
+            if self.config.long_only and signal.side == "sell":
                 continue
 
             if not regime_filter.allows(index, signal.side):
