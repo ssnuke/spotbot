@@ -52,19 +52,52 @@ def test_live_client_defaults_to_production_base_url(monkeypatch):
 
 def test_assert_safe_to_trade_passes_for_trade_only_key(monkeypatch):
     client = BinanceLiveClient(api_key="key", api_secret="secret")
-    monkeypatch.setattr(client, "get_account", lambda: {"canTrade": True, "canWithdraw": False})
+    monkeypatch.setattr(client, "get_account", lambda: {"canTrade": True})
+    monkeypatch.setattr(
+        client, "get_api_key_permissions",
+        lambda: {"enableSpotAndMarginTrading": True, "enableWithdrawals": False},
+    )
     client.assert_safe_to_trade()  # should not raise
+
+
+def test_assert_safe_to_trade_uses_key_level_withdrawal_flag_not_account_level(monkeypatch):
+    # Regression test: /api/v3/account's canWithdraw reflects the ACCOUNT's overall withdrawal
+    # capability, not this key's own permission scope -- a real account will very often show
+    # canWithdraw=True even when the key itself correctly has withdrawals disabled. Only the
+    # key-level enableWithdrawals flag (from /sapi/v1/account/apiRestrictions) should matter.
+    client = BinanceLiveClient(api_key="key", api_secret="secret")
+    monkeypatch.setattr(client, "get_account", lambda: {"canTrade": True, "canWithdraw": True})
+    monkeypatch.setattr(
+        client, "get_api_key_permissions",
+        lambda: {"enableSpotAndMarginTrading": True, "enableWithdrawals": False},
+    )
+    client.assert_safe_to_trade()  # must NOT raise despite account-level canWithdraw being True
 
 
 def test_assert_safe_to_trade_rejects_withdrawal_enabled_key(monkeypatch):
     client = BinanceLiveClient(api_key="key", api_secret="secret")
-    monkeypatch.setattr(client, "get_account", lambda: {"canTrade": True, "canWithdraw": True})
+    monkeypatch.setattr(client, "get_account", lambda: {"canTrade": True})
+    monkeypatch.setattr(
+        client, "get_api_key_permissions",
+        lambda: {"enableSpotAndMarginTrading": True, "enableWithdrawals": True},
+    )
     with pytest.raises(ValueError, match="WITHDRAWAL"):
         client.assert_safe_to_trade()
 
 
 def test_assert_safe_to_trade_rejects_key_without_trade_permission(monkeypatch):
     client = BinanceLiveClient(api_key="key", api_secret="secret")
-    monkeypatch.setattr(client, "get_account", lambda: {"canTrade": False, "canWithdraw": False})
+    monkeypatch.setattr(client, "get_account", lambda: {"canTrade": True})
+    monkeypatch.setattr(
+        client, "get_api_key_permissions",
+        lambda: {"enableSpotAndMarginTrading": False, "enableWithdrawals": False},
+    )
     with pytest.raises(ValueError, match="trading permission"):
+        client.assert_safe_to_trade()
+
+
+def test_assert_safe_to_trade_rejects_restricted_account(monkeypatch):
+    client = BinanceLiveClient(api_key="key", api_secret="secret")
+    monkeypatch.setattr(client, "get_account", lambda: {"canTrade": False})
+    with pytest.raises(ValueError, match="cannot trade"):
         client.assert_safe_to_trade()

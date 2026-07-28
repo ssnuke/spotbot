@@ -93,6 +93,12 @@ class BinanceSpotClient:
     def get_account(self) -> dict:
         return self._signed_request("GET", "/api/v3/account", {})
 
+    def get_api_key_permissions(self) -> dict:
+        """Returns what THIS SPECIFIC API KEY is scoped to do (enableWithdrawals,
+        enableSpotAndMarginTrading, etc.) -- distinct from get_account()'s canTrade/canWithdraw,
+        which reflect the ACCOUNT's overall status, not any particular key's permissions."""
+        return self._signed_request("GET", "/sapi/v1/account/apiRestrictions", {})
+
 
 class BinanceTestnetClient(BinanceSpotClient):
     """Signed REST client for Binance's public Spot Testnet (fake funds, real exchange matching)."""
@@ -137,13 +143,22 @@ class BinanceLiveClient(BinanceSpotClient):
         super().__init__(api_key, api_secret, base_url)
 
     def assert_safe_to_trade(self) -> None:
-        """Refuses to proceed unless the API key can trade and, critically, cannot withdraw.
-        A real-money bot should never hold a withdrawal-capable key -- if this account's key
-        is scoped too broadly, fail loudly at startup rather than trade with it anyway."""
+        """Refuses to proceed unless the account can trade and, critically, this specific API
+        key cannot withdraw. A real-money bot should never hold a withdrawal-capable key -- if
+        this key is scoped too broadly, fail loudly at startup rather than trade with it anyway.
+
+        Two separate Binance endpoints are needed: /api/v3/account's canTrade reflects the
+        ACCOUNT's overall status (e.g. compliance holds), while /sapi/v1/account/apiRestrictions'
+        enableWithdrawals/enableSpotAndMarginTrading reflect what THIS KEY is actually scoped to
+        do -- account-level canWithdraw being true does not mean this key can withdraw."""
         account = self.get_account()
         if not account.get("canTrade", False):
-            raise ValueError("This Binance API key does not have trading permission enabled.")
-        if account.get("canWithdraw", False):
+            raise ValueError("This Binance account cannot trade right now (restricted or suspended).")
+
+        permissions = self.get_api_key_permissions()
+        if not permissions.get("enableSpotAndMarginTrading", False):
+            raise ValueError("This Binance API key does not have Spot & Margin trading permission enabled.")
+        if permissions.get("enableWithdrawals", False):
             raise ValueError(
                 "This Binance API key has WITHDRAWAL permission enabled -- refusing to start. "
                 "Create a key with trading permission only, withdrawals disabled, for live trading."
