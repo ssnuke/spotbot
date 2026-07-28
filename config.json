@@ -1,13 +1,13 @@
 {
   "risk": {
-    "capital": 300.0,
+    "capital": 20.0,
     "risk_per_trade_pct": 0.005,
     "reward_ratio": 2.0,
     "max_daily_loss_pct": 0.01,
     "max_drawdown_pct": 0.05,
     "max_trades_per_day": 10,
     "max_open_positions": 3,
-    "max_position_pct": 0.1,
+    "max_position_pct": 0.5,
     "max_consecutive_losses": 3,
     "cooldown_period": 144,
     "min_entry_spacing_ticks": 0,
@@ -58,7 +58,7 @@
     "partial_exit_qty_pct": 0.25,
     "trailing_stop_pct": 0.005,
     "db_path": "live_state.db",
-    "execution_mode": "testnet",
+    "execution_mode": "live",
     "market_type": "spot",
     "summary_interval_seconds": 3600,
     "command_poll_interval_seconds": 5
