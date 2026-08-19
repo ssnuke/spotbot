@@ -1,5 +1,6 @@
 .env
 live_state.db
+live_state.db.bak*
 __pycache__/
 *.pyc
 .venv/
