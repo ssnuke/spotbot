@@ -67,17 +67,18 @@ def test_trade_rejected_when_capital_fully_allocated():
     for _ in range(10):
         manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0)
 
-    assert manager.allocated_capital == pytest.approx(50000.0, rel=1e-6)
+    assert manager.allocated_margin == pytest.approx(50000.0, rel=1e-6)
     assert not manager.validate_trade(entry_price=100.0, stop_loss_price=99.0)
 
 
 def test_allocated_capital_released_on_trade_close():
     manager = RiskManager(RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_position_pct=0.1))
     plan = manager.create_trade_plan(entry_price=100.0, stop_loss_price=95.0)
-    assert manager.allocated_capital == pytest.approx(plan.notional)
+    assert manager.allocated_margin == pytest.approx(plan.margin_required)
 
-    manager.register_trade_result(pnl=10.0, notional=plan.notional)
-    assert manager.allocated_capital == pytest.approx(0.0)
+    manager.register_trade_result(pnl=10.0, notional=plan.notional, margin=plan.margin_required)
+    assert manager.allocated_margin == pytest.approx(0.0)
+    assert manager.notional_exposure == pytest.approx(0.0)
 
 
 def test_cooldown_triggered_after_consecutive_losses():
@@ -142,7 +143,7 @@ def test_min_entry_spacing_only_applies_to_the_same_side():
 def test_compounding_disabled_by_default_position_size_stays_fixed():
     manager = RiskManager(RiskConfig(capital=10000, risk_per_trade_pct=0.01, max_position_pct=1.0))
     plan_before = manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0, side="buy")
-    manager.register_trade_result(pnl=plan_before.notional, notional=plan_before.notional)  # equity doubles
+    manager.register_trade_result(pnl=plan_before.notional, notional=plan_before.notional, margin=plan_before.margin_required)  # equity doubles
 
     # Without compounding, position size should be identical regardless of the equity gain.
     plan_after = manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0, side="buy")
@@ -154,7 +155,7 @@ def test_compounding_enabled_grows_position_size_after_a_gain():
         RiskConfig(capital=10000, risk_per_trade_pct=0.01, max_position_pct=1.0, compounding_enabled=True)
     )
     plan_before = manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0, side="buy")
-    manager.register_trade_result(pnl=10000.0, notional=plan_before.notional)  # equity: 10000 -> 20000
+    manager.register_trade_result(pnl=10000.0, notional=plan_before.notional, margin=plan_before.margin_required)  # equity: 10000 -> 20000
 
     plan_after = manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0, side="buy")
     # Equity doubled, so risk_amount (and therefore position size) should double too.
@@ -170,7 +171,7 @@ def test_compounding_enabled_shrinks_position_size_after_a_loss():
         )
     )
     plan_before = manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0, side="buy")
-    manager.register_trade_result(pnl=-5000.0, notional=plan_before.notional)  # equity: 10000 -> 5000
+    manager.register_trade_result(pnl=-5000.0, notional=plan_before.notional, margin=plan_before.margin_required)  # equity: 10000 -> 5000
     manager.daily_loss = 0.0  # isolate sizing behavior; daily-loss-limit behavior has its own test
 
     plan_after = manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0, side="buy")
@@ -191,3 +192,92 @@ def test_compounding_uses_equity_for_daily_loss_and_available_capital_limits():
     assert manager.validate_trade(entry_price=100.0, stop_loss_price=99.0)
     manager.daily_loss = 600.0  # now over 50% of current equity (1000) -> blocked
     assert not manager.validate_trade(entry_price=100.0, stop_loss_price=99.0)
+
+
+def test_leverage_over_max_leverage_refuses_at_construction():
+    with pytest.raises(ValueError):
+        RiskManager(RiskConfig(capital=1000, leverage=10.0, max_leverage=5.0))
+
+
+def test_margin_required_is_notional_divided_by_leverage():
+    manager = RiskManager(RiskConfig(capital=1000, risk_per_trade_pct=0.05, max_position_pct=1.0, leverage=2.0))
+    plan = manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0)
+
+    assert plan.margin_required == pytest.approx(plan.notional / 2.0)
+    assert manager.allocated_margin == pytest.approx(plan.margin_required)
+    assert manager.notional_exposure == pytest.approx(plan.notional)
+
+
+def test_liquidation_buffer_rejects_stop_too_close_to_estimated_liquidation():
+    # At leverage=10 (allowed here via a raised max_leverage) the liquidation distance from a
+    # 100 entry is roughly 100 * (1/10 - 0.004) = 9.6 -> liquidation ~90.4. An 8% buffer means
+    # the stop must be no closer than ~90.4 + 9.6*0.08 ~= 91.2. A stop at 91 is inside that
+    # buffer and must be rejected even though it would otherwise be a perfectly valid stop.
+    manager = RiskManager(RiskConfig(capital=1000, leverage=10.0, max_leverage=10.0, liquidation_buffer_pct=0.08))
+    assert not manager.validate_trade(entry_price=100.0, stop_loss_price=91.0, side="buy")
+    # A stop with more room to spare is accepted.
+    assert manager.validate_trade(entry_price=100.0, stop_loss_price=95.0, side="buy")
+
+
+def test_max_position_notional_clamps_oversized_trade_instead_of_raising():
+    # risk sizing alone would want far more than 50 notional; max_position_notional must clamp
+    # the size down (like max_position_pct already does), not raise -- validate_trade() approved
+    # this trade with no way to know the exact size create_trade_plan() will land on, so a raise
+    # here would fail a trade the caller was told was valid.
+    manager = RiskManager(
+        RiskConfig(capital=1000, risk_per_trade_pct=0.5, max_position_pct=1.0, leverage=1.0, max_position_notional=50.0)
+    )
+    plan = manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0)
+    assert plan.notional == pytest.approx(50.0)
+
+
+def test_max_position_notional_rejects_when_already_fully_allocated():
+    manager = RiskManager(
+        RiskConfig(capital=1000, risk_per_trade_pct=0.05, max_position_pct=1.0, leverage=1.0, max_position_notional=50.0)
+    )
+    manager.notional_exposure = 50.0  # already at the cap from other open positions
+    assert not manager.validate_trade(entry_price=100.0, stop_loss_price=99.0)
+    with pytest.raises(ValueError):
+        manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0)
+
+
+def test_leverage_amplifies_notional_within_the_same_notional_cap():
+    # Same margin (capital * max_position_pct) at 2x leverage doubles notional -- confirms the
+    # max_position_notional clamp is evaluated in notional terms, not margin terms.
+    manager = RiskManager(
+        RiskConfig(capital=1000, risk_per_trade_pct=0.5, max_position_pct=0.1, leverage=2.0, max_position_notional=100.0)
+    )
+    plan = manager.create_trade_plan(entry_price=100.0, stop_loss_price=99.0)
+    assert plan.notional == pytest.approx(100.0)  # clamped by max_position_notional, not max_position_pct
+    assert plan.margin_required == pytest.approx(50.0)
+
+
+def test_check_margin_ratio_thresholds():
+    manager = RiskManager(RiskConfig(capital=1000, margin_ratio_warn_pct=0.40, margin_ratio_force_close_pct=0.65))
+    assert manager.check_margin_ratio(0.10) == "ok"
+    assert manager.check_margin_ratio(0.40) == "warn"
+    assert manager.check_margin_ratio(0.65) == "force_close"
+    assert manager.check_margin_ratio(0.90) == "force_close"
+
+
+def test_apply_funding_payment_adjusts_equity_and_peak():
+    manager = RiskManager(RiskConfig(capital=1000))
+    manager.apply_funding_payment(-5.0)
+    assert manager.equity == pytest.approx(995.0)
+    assert manager.peak_equity == pytest.approx(1000.0)  # a loss never raises the peak
+
+    manager.apply_funding_payment(20.0)
+    assert manager.equity == pytest.approx(1015.0)
+    assert manager.peak_equity == pytest.approx(1015.0)  # a gain past the old peak raises it
+
+
+def test_current_side_tracks_open_position_and_clears_on_close():
+    manager = RiskManager(RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_open_positions=1))
+    assert manager.current_side is None
+
+    plan = manager.create_trade_plan(entry_price=100.0, stop_loss_price=95.0, side="buy")
+    assert manager.current_side == "buy"
+
+    manager.open_positions = 1  # mirrors LiveRunner incrementing this after a successful fill
+    manager.register_trade_result(pnl=5.0, notional=plan.notional, margin=plan.margin_required)
+    assert manager.current_side is None

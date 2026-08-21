@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+import os
 import signal
 import time
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from app.binance_client import SymbolFilters, round_step_size
+from app.binance_futures_client import BinanceFuturesClient
 from app.data_feed import BinanceDataFeed
 from app.fx import get_usd_inr_rate
 from app.notifications import TelegramNotifier
-from app.order_executor import LiveOrderExecutor, OrderExecutor, SimulatedOrderExecutor, TestnetOrderExecutor
+from app.order_executor import (
+    FuturesLiveOrderExecutor,
+    FuturesTestnetOrderExecutor,
+    LiveOrderExecutor,
+    OrderExecutor,
+    SimulatedOrderExecutor,
+    TestnetOrderExecutor,
+)
 from app.risk_manager import RiskConfig, RiskManager
 from app.state_store import ClosedTradeRecord, OpenTradeState, StateStore
 from app.strategy import TAEStrategy, TAEStrategyConfig
@@ -77,6 +86,11 @@ class LiveRunner:
         store: Optional[StateStore] = None,
         symbol_filters: Optional[SymbolFilters] = None,
         fx_rate_provider: Optional[Callable[[], Optional[float]]] = None,
+        futures_client: Optional[BinanceFuturesClient] = None,
+        market_type: str = "spot",
+        mark_price_divergence_pct: float = 0.01,
+        mark_price_divergence_max_ticks: int = 3,
+        kill_switch_file_path: str = "KILL_SWITCH",
     ):
         self._fx_rate_provider = fx_rate_provider or get_usd_inr_rate
         self.symbol = symbol
@@ -91,6 +105,11 @@ class LiveRunner:
         self.long_only = long_only
         self.summary_interval_seconds = summary_interval_seconds
         self.command_poll_interval_seconds = command_poll_interval_seconds
+        self.futures_client = futures_client
+        self.market_type = market_type
+        self.mark_price_divergence_pct = mark_price_divergence_pct
+        self.mark_price_divergence_max_ticks = mark_price_divergence_max_ticks
+        self.kill_switch_file_path = kill_switch_file_path
 
         self.data_feed = data_feed or BinanceDataFeed()
         self.order_executor = order_executor or SimulatedOrderExecutor()
@@ -103,10 +122,15 @@ class LiveRunner:
 
         self._current_day = datetime.now(timezone.utc).date().isoformat()
         self.cumulative_pnl = 0.0
+        self.cumulative_funding_paid = 0.0
         self.closed_trades = 0
         self.winning_trades = 0
         self.losing_trades = 0
+        self._funding_last_checked_ms = int(time.time() * 1000)
+        self._mark_price_divergence_ticks = 0
         self._restore_state()
+        if self.futures_client is not None:
+            self._revalidate_futures_positions_on_restart()
         self._last_candle_open_time: Optional[int] = None
         self._update_offset: Optional[int] = None
         self._stop_requested = False
@@ -118,7 +142,10 @@ class LiveRunner:
     def _release_reserved_trade_slot(self, plan) -> None:
         """Undoes create_trade_plan()'s capital/daily-trade reservation for an order that
         never actually resulted in an open position (skipped, rejected, or failed to place)."""
-        self.risk_manager.allocated_capital = max(0.0, self.risk_manager.allocated_capital - plan.notional)
+        self.risk_manager.allocated_margin = max(0.0, self.risk_manager.allocated_margin - plan.margin_required)
+        self.risk_manager.notional_exposure = max(0.0, self.risk_manager.notional_exposure - plan.notional)
+        if self.risk_manager.open_positions == 0:
+            self.risk_manager.current_side = None
         self.risk_manager.daily_trades = max(0, self.risk_manager.daily_trades - 1)
         self._save_risk_state()
 
@@ -136,8 +163,11 @@ class LiveRunner:
         return "```\n" + "\n".join(lines) + "\n```"
 
     def _mode_label(self) -> str:
-        if isinstance(self.order_executor, LiveOrderExecutor):
-            return "\U0001F534 LIVE — REAL MONEY"
+        if isinstance(self.order_executor, (LiveOrderExecutor, FuturesLiveOrderExecutor)):
+            suffix = " (FUTURES, LEVERAGED)" if isinstance(self.order_executor, FuturesLiveOrderExecutor) else ""
+            return f"\U0001F534 LIVE — REAL MONEY{suffix}"
+        if isinstance(self.order_executor, FuturesTestnetOrderExecutor):
+            return "futures testnet"
         if isinstance(self.order_executor, TestnetOrderExecutor):
             return "testnet"
         return "simulated (no real orders)"
@@ -158,11 +188,15 @@ class LiveRunner:
         self.risk_manager.daily_loss = state["daily_loss"]
         self.risk_manager.daily_trades = state["daily_trades"]
         self.risk_manager.open_positions = state["open_positions"]
-        self.risk_manager.allocated_capital = state["allocated_capital"]
+        # allocated_margin falls back to the legacy allocated_capital column so DBs written
+        # before this migration don't lose their in-flight allocation on the first restart.
+        self.risk_manager.allocated_margin = state.get("allocated_margin") or state.get("allocated_capital") or 0.0
+        self.risk_manager.notional_exposure = state.get("notional_exposure") or 0.0
         self.risk_manager.consecutive_losses = state["consecutive_losses"]
         self.risk_manager.cooldown_remaining = state["cooldown_remaining"]
         self._current_day = state["current_day"]
         self.cumulative_pnl = state.get("cumulative_pnl", 0.0) or 0.0
+        self.cumulative_funding_paid = state.get("cumulative_funding_paid", 0.0) or 0.0
         self.closed_trades = state.get("closed_trades", 0) or 0
         self.winning_trades = state.get("winning_trades", 0) or 0
         self.losing_trades = state.get("losing_trades", 0) or 0
@@ -177,14 +211,20 @@ class LiveRunner:
         # negative and blocking all new trades. Clamp it so the account self-heals
         # as those positions close naturally.
         reference_capital = self.risk_manager._reference_capital()
-        if self.risk_manager.allocated_capital > reference_capital:
+        if self.risk_manager.allocated_margin > reference_capital:
             self._log(
-                f"WARNING: persisted allocated_capital ({self.risk_manager.allocated_capital:.2f}) exceeds "
+                f"WARNING: persisted allocated_margin ({self.risk_manager.allocated_margin:.2f}) exceeds "
                 f"reference capital ({reference_capital:.2f}) — capital/equity was likely reduced "
                 "while positions were open. Clamping so new trades aren't permanently blocked."
             )
-            self.risk_manager.allocated_capital = reference_capital
+            self.risk_manager.allocated_margin = reference_capital
             self._save_risk_state()
+
+        # Recover which side is currently open so opposite-signal reversal detection keeps
+        # working across a restart, not just for the lifetime of one process.
+        open_trades = self.store.list_open_trades()
+        if open_trades:
+            self.risk_manager.current_side = open_trades[-1].side
 
     def _save_risk_state(self) -> None:
         self.store.save_risk_state(
@@ -194,7 +234,147 @@ class LiveRunner:
             closed_trades=self.closed_trades,
             winning_trades=self.winning_trades,
             losing_trades=self.losing_trades,
+            cumulative_funding_paid=self.cumulative_funding_paid,
         )
+
+    def _get_current_price(self, fallback_price: float) -> float:
+        """Mark price when trading futures (what the exchange itself uses for unrealized PnL
+        and liquidation), falling back to the candle-close-derived price otherwise/on failure."""
+        if self.futures_client is not None:
+            mark_price = self.futures_client.get_mark_price(self.symbol)
+            if mark_price:
+                return mark_price
+        return fallback_price
+
+    def _estimate_margin_ratio(self, position_risk: dict) -> Optional[float]:
+        """Distance-based proxy for closeness to liquidation: 0.0 at entry price, approaching
+        1.0 as mark price approaches the liquidation price. Deliberately avoids depending on
+        Binance's own maintMargin/marginRatio field naming (which varies by endpoint version) --
+        cross-check this proxy against the account's real margin ratio during testnet validation."""
+        try:
+            entry = float(position_risk["entryPrice"])
+            mark = float(position_risk["markPrice"])
+            liq = float(position_risk["liquidationPrice"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        total_distance = abs(entry - liq)
+        if liq <= 0 or total_distance <= 0:
+            return None
+        remaining_distance = abs(mark - liq)
+        return max(0.0, min(1.0, 1 - remaining_distance / total_distance))
+
+    def _emergency_close_all(self, reason: str) -> None:
+        """Cancels any resting orders and market-closes every open position immediately, then
+        pauses new entries (does not stop the process -- /status and /resume stay reachable)."""
+        self._log(f"EMERGENCY CLOSE triggered: {reason}")
+        if self.futures_client is not None:
+            try:
+                self.futures_client.cancel_all_open_orders(self.symbol)
+            except Exception as exc:
+                self._log(f"cancel_all_open_orders failed during emergency close: {exc}")
+        for trade in self.store.list_open_trades():
+            current_price = self._get_current_price(trade.entry_execution_price)
+            self._close_trade(trade, current_price, reason)
+        self._trading_paused = True
+        self._save_risk_state()
+        self.notifier.send(
+            f"\U0001F6A8 EMERGENCY CLOSE: {reason}\n"
+            f"All positions closed, new entries paused. Send /resume after review, or /kill to stop."
+        )
+
+    def _revalidate_futures_positions_on_restart(self) -> None:
+        """On restart, re-checks any recovered open position against the CURRENT mark price
+        and liquidation buffer -- a position that was safe when the process last ran may not
+        still be, and it shouldn't simply resume being monitored without this check."""
+        if not self.store.list_open_trades():
+            return
+        position_risk = self.futures_client.get_position_risk(self.symbol)
+        if position_risk is None:
+            return
+        margin_ratio = self._estimate_margin_ratio(position_risk)
+        if margin_ratio is not None and self.risk_manager.check_margin_ratio(margin_ratio) == "force_close":
+            self._emergency_close_all("restart_liquidation_check")
+
+    def _ensure_futures_account_configured(self) -> bool:
+        """Explicitly sets and verifies one-way position mode, isolated margin, and configured
+        leverage before the bot is allowed to start. Returns False (refuse to start) on any
+        failure -- futures orders must never be placed against unverified account settings."""
+        try:
+            self.futures_client.set_position_mode(dual_side=False)
+            self.futures_client.set_margin_type(self.symbol, self.risk_manager.config.margin_type)
+            self.futures_client.set_leverage(self.symbol, self.risk_manager.config.leverage)
+            mode = self.futures_client.get_position_mode()
+            if mode.get("dualSidePosition") is not False:
+                raise ValueError(f"Position mode did not stick: {mode}")
+        except Exception as exc:
+            self.notifier.send(f"\U0001F6D1 Futures account setup failed, refusing to start: {exc}")
+            self._log(f"Futures account setup failed, refusing to start: {exc}")
+            return False
+        return True
+
+    def _check_futures_safety(self) -> None:
+        """Per-poll futures safety checks: margin-ratio warn/force-close, and a mark-price
+        vs. last-trade-price divergence kill switch sustained over several consecutive polls."""
+        if self.futures_client is None:
+            return
+
+        if self.store.list_open_trades():
+            position_risk = self.futures_client.get_position_risk(self.symbol)
+            if position_risk is not None:
+                margin_ratio = self._estimate_margin_ratio(position_risk)
+                if margin_ratio is not None:
+                    status = self.risk_manager.check_margin_ratio(margin_ratio)
+                    if status == "force_close":
+                        self._emergency_close_all(f"margin_ratio_breach ({margin_ratio:.1%})")
+                        return
+                    if status == "warn":
+                        self.notifier.send(
+                            f"⚠️ Margin ratio warning: {margin_ratio:.1%} on {self.symbol}"
+                        )
+
+        last_price = self.data_feed.get_latest_price(self.symbol)
+        mark_price = self.futures_client.get_mark_price(self.symbol)
+        if not last_price or not mark_price or last_price <= 0:
+            return
+        divergence = abs(mark_price - last_price) / last_price
+        if divergence <= self.mark_price_divergence_pct:
+            self._mark_price_divergence_ticks = 0
+            return
+        self._mark_price_divergence_ticks += 1
+        if self._mark_price_divergence_ticks >= self.mark_price_divergence_max_ticks:
+            ticks = self._mark_price_divergence_ticks
+            self._mark_price_divergence_ticks = 0
+            self._emergency_close_all(f"mark_price_divergence ({divergence:.2%} sustained for {ticks} polls)")
+
+    def _check_funding_payments(self) -> None:
+        """Folds any new funding payments (positive or negative) since the last check into
+        equity/PnL -- funding accrues independent of trade close events and is otherwise
+        invisible to the bot's own bookkeeping."""
+        if self.futures_client is None:
+            return
+        try:
+            payments = self.futures_client.get_funding_payments(self.symbol, self._funding_last_checked_ms)
+        except Exception as exc:
+            self._log(f"Failed to fetch funding payments: {exc}")
+            return
+        self._funding_last_checked_ms = int(time.time() * 1000)
+        if not payments:
+            return
+        total = sum(float(payment.get("income", 0.0) or 0.0) for payment in payments)
+        if total == 0.0:
+            return
+        self.risk_manager.apply_funding_payment(total)
+        self.cumulative_funding_paid += total
+        self._save_risk_state()
+        self._log(f"Funding payments applied: {total:+.4f} ({len(payments)} entries)")
+        self.notifier.send(f"\U0001F4B8 Funding: {self._fmt_usdt(total, signed=True)} ({len(payments)} payment(s))")
+
+    def _check_kill_switch_file(self) -> None:
+        """A Telegram-independent stop mechanism: if a sentinel file is present, stop exactly
+        like the /kill command would, distinguishable in the log from a Telegram-issued kill."""
+        if os.path.exists(self.kill_switch_file_path):
+            self._stop_requested = True
+            self._log(f"Kill switch file detected at {self.kill_switch_file_path!r}, stopping")
 
     def _maybe_roll_day(self) -> None:
         today = datetime.now(timezone.utc).date().isoformat()
@@ -271,6 +451,11 @@ class LiveRunner:
             opened_at=datetime.now(timezone.utc).isoformat(),
             realized_pnl_so_far=-entry_fee,
             total_fees=entry_fee,
+            leverage=self.risk_manager.config.leverage,
+            margin_type=self.risk_manager.config.margin_type,
+            margin_required=plan.margin_required,
+            notional=plan.notional,
+            liquidation_price=plan.liquidation_price,
         )
         self.store.add_open_trade(trade_state)
         self.risk_manager.open_positions += 1
@@ -292,7 +477,9 @@ class LiveRunner:
 
         close_side = "SELL" if trade.side == "buy" else "BUY"
         try:
-            order = self.order_executor.place_order(self.symbol, close_side, partial_qty, reference_price=current_price)
+            order = self.order_executor.place_order(
+                self.symbol, close_side, partial_qty, reference_price=current_price, reduce_only=True
+            )
         except Exception as exc:
             # Nothing has been mutated yet -- the trade stays open unchanged and this partial
             # exit will simply be retried on the next poll if the price condition still holds.
@@ -352,7 +539,7 @@ class LiveRunner:
         close_side = "SELL" if trade.side == "buy" else "BUY"
         try:
             order = self.order_executor.place_order(
-                self.symbol, close_side, trade.remaining_quantity, reference_price=current_price
+                self.symbol, close_side, trade.remaining_quantity, reference_price=current_price, reduce_only=True
             )
         except Exception as exc:
             # Nothing has been mutated yet -- the trade stays open and the close is retried
@@ -379,8 +566,9 @@ class LiveRunner:
         total_trade_pnl = trade.realized_pnl_so_far + pnl
         total_trade_fees = trade.total_fees + exit_fee
 
-        notional = trade.quantity * trade.entry_execution_price
-        self.risk_manager.register_trade_result(total_trade_pnl, notional=notional)
+        notional = trade.notional or (trade.quantity * trade.entry_execution_price)
+        margin = trade.margin_required or notional
+        self.risk_manager.register_trade_result(total_trade_pnl, notional=notional, margin=margin)
         self.store.remove_open_trade(trade.id)
         self.store.add_trade_history(
             ClosedTradeRecord(
@@ -455,6 +643,26 @@ class LiveRunner:
                 elif current_price >= trade.trailing_stop:
                     self._close_trade(trade, current_price, "trailing_stop")
 
+    def _futures_status_lines(self) -> str:
+        """Leverage/margin/position-mode line, plus live margin ratio + liquidation price
+        when a position is open. Empty string outside futures mode."""
+        if self.futures_client is None:
+            return ""
+        lines = (
+            f"\nLeverage: {self.risk_manager.config.leverage:g}x ({self.risk_manager.config.margin_type}, one-way)"
+        )
+        open_trades = self.store.list_open_trades()
+        if open_trades:
+            position_risk = self.futures_client.get_position_risk(self.symbol)
+            if position_risk is not None:
+                margin_ratio = self._estimate_margin_ratio(position_risk)
+                if margin_ratio is not None:
+                    lines += f"\nMargin ratio: {margin_ratio:.1%}"
+                liquidation_price = open_trades[0].liquidation_price
+                if liquidation_price:
+                    lines += f"\nLiquidation price (est.): {liquidation_price:.2f}"
+        return lines
+
     def _status_message(self, prefix: str = "\U0001F4CA Status") -> str:
         open_trades = self.store.list_open_trades()
         win_rate = (self.winning_trades / self.closed_trades * 100) if self.closed_trades else 0.0
@@ -470,6 +678,7 @@ class LiveRunner:
             f"{' (compounding ON)' if self.risk_manager.config.compounding_enabled else ''}\n"
             f"Daily trades used: {self.risk_manager.daily_trades}/{self.risk_manager.config.max_trades_per_day}\n"
             f"Cooldown remaining: {self.risk_manager.cooldown_remaining} ticks"
+            f"{self._futures_status_lines()}"
         )
 
     def _open_trades_message(self) -> str:
@@ -538,6 +747,7 @@ class LiveRunner:
             f"{' (compounding ON)' if self.risk_manager.config.compounding_enabled else ''}\n"
             f"Cumulative PnL so far: {self._fmt_usdt(self.cumulative_pnl, signed=True)} over {self.closed_trades} trades\n"
             f"Open positions recovered: {len(open_trades)}"
+            f"{self._futures_status_lines()}"
         )
         if open_trades:
             for trade in open_trades:
@@ -606,23 +816,24 @@ class LiveRunner:
 
     def run_once(self) -> None:
         self._maybe_roll_day()
+        self._check_funding_payments()
         prices, last_open_time = self._fetch_price_history()
         if not prices:
             self._log("No price data available")
             return
 
         current_price = prices[-1]
-        self._check_open_trades(current_price)
+        exit_price = self._get_current_price(current_price)
+        self._check_open_trades(exit_price)
+        self._check_futures_safety()
+        if self._trading_paused:
+            # _check_futures_safety may have just triggered an emergency close and paused
+            # trading -- don't fall through into signal evaluation in the same poll.
+            return
 
         if last_open_time == self._last_candle_open_time:
             return  # no new closed candle since last check
         self._last_candle_open_time = last_open_time
-
-        if self._trading_paused:
-            return  # existing positions above are still managed; just no new entries
-
-        if self.risk_manager.open_positions >= self.risk_manager.config.max_open_positions:
-            return
 
         signal = self.strategy.generate_signal(prices, self.symbol)
         if signal is None:
@@ -633,9 +844,24 @@ class LiveRunner:
             self._log("Sell signal skipped: long_only is enabled (spot can't short)")
             return
 
+        if self.risk_manager.current_side and signal.side != self.risk_manager.current_side:
+            self._log(
+                f"Opposite signal ({signal.side}) while {self.risk_manager.current_side} is open "
+                "-- closing first, no naked reverse"
+            )
+            for trade in self.store.list_open_trades():
+                self._close_trade(trade, exit_price, "signal_reversal")
+            return  # next poll re-evaluates and may open the new side fresh, fully risk-checked
+
+        if self.risk_manager.open_positions >= self.risk_manager.config.max_open_positions:
+            return
+
         self._open_position(signal, entry_price=current_price)
 
     def run_forever(self) -> None:
+        if self.futures_client is not None and not self._ensure_futures_account_configured():
+            return  # refuse to start -- futures orders must never run against unverified settings
+
         self._install_signal_handlers()
         self._send_started_message()
 
@@ -643,6 +869,10 @@ class LiveRunner:
         last_summary_at = time.time()
 
         while not self._stop_requested:
+            self._check_kill_switch_file()
+            if self._stop_requested:
+                break
+
             try:
                 self._poll_commands()
             except Exception as exc:

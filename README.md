@@ -87,18 +87,35 @@ python3 main.py --mode backtest --download-if-missing --start-date 2025-01-01 --
 - `app/bot.py` — live/paper bot runner
 
 
-python3 main.py --mode backtest --download-if-missing --start-date 2025-01-01 --end-date 2025-12-30
+python3 main.py --mode backtest --download-if-missing --start-date 2025-01-01 --end-date 2025-06-30
 
 
 
 python3 main.py --mode backtest --download-if-missing --start-date 2024-01-01 --end-date 2024-12-30
 
- python3 main.py --mode backtest --download-if-missing --start-date 2026-04-01 --end-date 2026-04-30
+python3 main.py --mode backtest --download-if-missing --start-date 2026-04-01 --end-date 2026-04-30
 
-  python3 main.py --mode backtest --download-if-missing --start-date 2026-05-01 --end-date 2026-06-30
+python3 main.py --mode backtest --download-if-missing --start-date 2026-05-01 --end-date 2026-06-30
 
-  python3 main.py --mode backtest --download-if-missing --start-date 2022-01-01 --end-date 2022-12-30
+python3 main.py --mode backtest --download-if-missing --start-date 2022-01-01 --end-date 2022-12-30
 
 
-  1. update env
-  2. Install 
+
+
+python3 main.py --mode backtest --start-date 2025-01-01 --end-date 2025-12-01 --download-if-missing --capital 200
+
+python3 main.py --mode backtest --start-date 2024-01-01 --end-date 2024-12-01 --download-if-missing --capital 200
+
+python3 main.py --mode backtest --start-date 2023-01-01 --end-date 2023-12-01 --download-if-missing --capital 200
+
+python3 main.py --mode backtest --start-date 2021-01-01 --end-date 2021-12-01 --download-if-missing --capital 200
+
+
+Futures Mode 
+% python3 main.py --mode backtest --download-if-missing --start-date 2025-01-01 --end-date 2025-06-30 --capital 1000
+
+=== BACKTEST SUMMARY ===
+
+python3 main.py --mode backtest --download-if-missing --start-date 2025-01-01 --end-date 2025-12-30 --capital 1000
+
+python3 main.py --mode backtest --download-if-missing --start-date 2024-01-01 --end-date 2024-12-30 --capital 1000

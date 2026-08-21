@@ -22,6 +22,11 @@ class OpenTradeState:
     opened_at: str
     realized_pnl_so_far: float = 0.0
     total_fees: float = 0.0
+    leverage: float = 1.0
+    margin_type: str = "ISOLATED"
+    margin_required: float = 0.0
+    notional: float = 0.0
+    liquidation_price: float = 0.0
 
 
 @dataclass
@@ -56,6 +61,7 @@ class StateStore:
             )"""
         )
         self._ensure_pnl_columns()
+        self._ensure_futures_risk_columns()
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS open_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,6 +89,16 @@ class StateStore:
             self.conn.execute("ALTER TABLE open_trades ADD COLUMN realized_pnl_so_far REAL DEFAULT 0.0")
         if "total_fees" not in existing:
             self.conn.execute("ALTER TABLE open_trades ADD COLUMN total_fees REAL DEFAULT 0.0")
+        futures_defaults = {
+            "leverage": "REAL DEFAULT 1.0",
+            "margin_type": "TEXT DEFAULT 'ISOLATED'",
+            "margin_required": "REAL DEFAULT 0.0",
+            "notional": "REAL DEFAULT 0.0",
+            "liquidation_price": "REAL DEFAULT 0.0",
+        }
+        for column, ddl in futures_defaults.items():
+            if column not in existing:
+                self.conn.execute(f"ALTER TABLE open_trades ADD COLUMN {column} {ddl}")
         self.conn.commit()
 
     def _ensure_trade_history_columns(self) -> None:
@@ -106,6 +122,18 @@ class StateStore:
                 self.conn.execute(ddl)
         self.conn.commit()
 
+    def _ensure_futures_risk_columns(self) -> None:
+        existing = {row[1] for row in self.conn.execute("PRAGMA table_info(risk_state)")}
+        migrations = {
+            "allocated_margin": "ALTER TABLE risk_state ADD COLUMN allocated_margin REAL DEFAULT 0.0",
+            "notional_exposure": "ALTER TABLE risk_state ADD COLUMN notional_exposure REAL DEFAULT 0.0",
+            "cumulative_funding_paid": "ALTER TABLE risk_state ADD COLUMN cumulative_funding_paid REAL DEFAULT 0.0",
+        }
+        for column, ddl in migrations.items():
+            if column not in existing:
+                self.conn.execute(ddl)
+        self.conn.commit()
+
     def save_risk_state(
         self,
         risk_manager,
@@ -114,12 +142,14 @@ class StateStore:
         closed_trades: int = 0,
         winning_trades: int = 0,
         losing_trades: int = 0,
+        cumulative_funding_paid: float = 0.0,
     ) -> None:
         self.conn.execute(
             """INSERT INTO risk_state (id, daily_loss, daily_trades, open_positions, allocated_capital,
                 consecutive_losses, cooldown_remaining, current_day, cumulative_pnl, closed_trades,
-                winning_trades, losing_trades, equity, peak_equity)
-               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                winning_trades, losing_trades, equity, peak_equity, allocated_margin, notional_exposure,
+                cumulative_funding_paid)
+               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                 daily_loss=excluded.daily_loss, daily_trades=excluded.daily_trades,
                 open_positions=excluded.open_positions, allocated_capital=excluded.allocated_capital,
@@ -127,12 +157,14 @@ class StateStore:
                 current_day=excluded.current_day, cumulative_pnl=excluded.cumulative_pnl,
                 closed_trades=excluded.closed_trades, winning_trades=excluded.winning_trades,
                 losing_trades=excluded.losing_trades, equity=excluded.equity,
-                peak_equity=excluded.peak_equity""",
+                peak_equity=excluded.peak_equity, allocated_margin=excluded.allocated_margin,
+                notional_exposure=excluded.notional_exposure,
+                cumulative_funding_paid=excluded.cumulative_funding_paid""",
             (
                 risk_manager.daily_loss,
                 risk_manager.daily_trades,
                 risk_manager.open_positions,
-                risk_manager.allocated_capital,
+                risk_manager.allocated_margin,  # kept in the legacy allocated_capital column too
                 risk_manager.consecutive_losses,
                 risk_manager.cooldown_remaining,
                 current_day,
@@ -142,6 +174,9 @@ class StateStore:
                 losing_trades,
                 risk_manager.equity,
                 risk_manager.peak_equity,
+                risk_manager.allocated_margin,
+                risk_manager.notional_exposure,
+                cumulative_funding_paid,
             ),
         )
         self.conn.commit()
@@ -158,8 +193,9 @@ class StateStore:
         cur = self.conn.execute(
             """INSERT INTO open_trades (symbol, side, entry_price, entry_execution_price, stop_loss,
                 take_profit, quantity, remaining_quantity, trailing_stop, partial_exit_done,
-                entry_order_id, opened_at, realized_pnl_so_far, total_fees)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                entry_order_id, opened_at, realized_pnl_so_far, total_fees, leverage, margin_type,
+                margin_required, notional, liquidation_price)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 trade.symbol,
                 trade.side,
@@ -175,6 +211,11 @@ class StateStore:
                 trade.opened_at,
                 trade.realized_pnl_so_far,
                 trade.total_fees,
+                trade.leverage,
+                trade.margin_type,
+                trade.margin_required,
+                trade.notional,
+                trade.liquidation_price,
             ),
         )
         self.conn.commit()
@@ -216,6 +257,11 @@ class StateStore:
                     opened_at=data["opened_at"],
                     realized_pnl_so_far=data.get("realized_pnl_so_far") or 0.0,
                     total_fees=data.get("total_fees") or 0.0,
+                    leverage=data.get("leverage") or 1.0,
+                    margin_type=data.get("margin_type") or "ISOLATED",
+                    margin_required=data.get("margin_required") or 0.0,
+                    notional=data.get("notional") or 0.0,
+                    liquidation_price=data.get("liquidation_price") or 0.0,
                 )
             )
         return trades

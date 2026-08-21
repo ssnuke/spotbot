@@ -8,24 +8,27 @@ def test_risk_state_round_trip():
     manager.daily_loss = 120.0
     manager.daily_trades = 3
     manager.open_positions = 1
-    manager.allocated_capital = 4500.0
+    manager.allocated_margin = 4500.0
+    manager.notional_exposure = 9000.0
     manager.consecutive_losses = 2
     manager.cooldown_remaining = 5
     manager.equity = 46500.0
     manager.peak_equity = 51000.0
 
-    store.save_risk_state(manager, current_day="2026-07-23")
+    store.save_risk_state(manager, current_day="2026-07-23", cumulative_funding_paid=-3.5)
     state = store.load_risk_state()
 
     assert state["daily_loss"] == 120.0
     assert state["daily_trades"] == 3
     assert state["open_positions"] == 1
-    assert state["allocated_capital"] == 4500.0
+    assert state["allocated_margin"] == 4500.0
+    assert state["notional_exposure"] == 9000.0
     assert state["consecutive_losses"] == 2
     assert state["cooldown_remaining"] == 5
     assert state["current_day"] == "2026-07-23"
     assert state["equity"] == 46500.0
     assert state["peak_equity"] == 51000.0
+    assert state["cumulative_funding_paid"] == -3.5
 
 
 def test_risk_state_upsert_overwrites_previous_row():
@@ -159,3 +162,37 @@ def test_trade_history_tracks_fees():
     store.add_trade_history(record_with_fees)
     records = store.list_recent_trade_history(limit=1)
     assert records[0].fees == 0.35
+
+
+def test_open_trade_defaults_futures_fields_for_spot_use():
+    store = StateStore(":memory:")
+    trade = OpenTradeState(
+        id=None, symbol="BTC/USDT", side="buy", entry_price=100.0, entry_execution_price=100.0,
+        stop_loss=99.0, take_profit=103.0, quantity=1.0, remaining_quantity=1.0, trailing_stop=99.0,
+        partial_exit_done=False, entry_order_id="1", opened_at="2026-07-23T00:00:00",
+    )
+    store.add_open_trade(trade)
+
+    saved = store.list_open_trades()[0]
+    assert saved.leverage == 1.0
+    assert saved.margin_type == "ISOLATED"
+    assert saved.margin_required == 0.0
+    assert saved.notional == 0.0
+    assert saved.liquidation_price == 0.0
+
+
+def test_open_trade_persists_futures_fields():
+    store = StateStore(":memory:")
+    trade = OpenTradeState(
+        id=None, symbol="BTC/USDT", side="sell", entry_price=100.0, entry_execution_price=100.0,
+        stop_loss=105.0, take_profit=90.0, quantity=1.0, remaining_quantity=1.0, trailing_stop=105.0,
+        partial_exit_done=False, entry_order_id="1", opened_at="2026-07-23T00:00:00",
+        leverage=3.0, margin_type="ISOLATED", margin_required=33.33, notional=100.0, liquidation_price=125.0,
+    )
+    store.add_open_trade(trade)
+
+    saved = store.list_open_trades()[0]
+    assert saved.leverage == 3.0
+    assert saved.margin_required == 33.33
+    assert saved.notional == 100.0
+    assert saved.liquidation_price == 125.0

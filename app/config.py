@@ -23,6 +23,14 @@ class RiskConfigData:
     cooldown_period: int = 0
     min_entry_spacing_ticks: int = 0
     compounding_enabled: bool = False
+    leverage: float = 1.0
+    max_leverage: float = 5.0
+    margin_type: str = "ISOLATED"
+    liquidation_buffer_pct: float = 0.08
+    max_position_notional: float = float("inf")
+    maintenance_margin_rate: float = 0.004
+    margin_ratio_warn_pct: float = 0.40
+    margin_ratio_force_close_pct: float = 0.65
 
 
 @dataclass
@@ -31,6 +39,7 @@ class BacktestConfigData:
     timeframe: str = "1m"
     risk_per_trade_pct: float = 0.003
     max_daily_loss_pct: float = 0.03
+    max_drawdown_pct: float = 0.05
     max_trades_per_day: int = 8
     max_open_positions: int = 3
     max_position_pct: float = 0.1
@@ -54,6 +63,13 @@ class BacktestConfigData:
     htf_short_period: int = 9
     htf_long_period: int = 21
     long_only: bool = False  # skip sell/short signals -- required for real spot execution, which can't short
+    leverage: float = 1.0
+    max_leverage: float = 5.0
+    margin_type: str = "ISOLATED"
+    liquidation_buffer_pct: float = 0.08
+    max_position_notional: float = float("inf")
+    maintenance_margin_rate: float = 0.004
+    funding_enabled: bool = False
 
 
 @dataclass
@@ -80,7 +96,7 @@ class LiveConfigData:
     trailing_stop_pct: float = 0.005
     db_path: str = "live_state.db"
     execution_mode: str = "simulated"
-    market_type: str = "spot"  # "spot" is the only implemented value; "futures" is reserved
+    market_type: str = "spot"  # "spot" or "futures" (USDT-M, isolated margin, one-way mode)
     long_only: bool = False  # skip sell/short signals -- required for real spot execution, which can't short
     summary_interval_seconds: int = 3600
     command_poll_interval_seconds: int = 5

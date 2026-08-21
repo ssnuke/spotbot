@@ -11,7 +11,13 @@ from app.backtester import BacktestConfig, Backtester, BacktestResult, BacktestR
 from app.config import AppConfig, load_app_config
 from app.data_feed import BinanceDataFeed
 from app.live_runner import LiveRunner
-from app.order_executor import LiveOrderExecutor, SimulatedOrderExecutor, TestnetOrderExecutor
+from app.order_executor import (
+    FuturesLiveOrderExecutor,
+    FuturesTestnetOrderExecutor,
+    LiveOrderExecutor,
+    SimulatedOrderExecutor,
+    TestnetOrderExecutor,
+)
 from app.risk_manager import RiskConfig
 from app.strategy import TAEStrategyConfig
 from app.telemetry import Telemetry
@@ -19,16 +25,22 @@ from app.telemetry import Telemetry
 load_dotenv()
 
 def parse_date(value: str) -> datetime:
+    stripped = value.strip()
+    digits = stripped[1:] if stripped[:1] == "-" else stripped
+    if digits.isdigit():
+        # A pure integer is always an epoch timestamp, never a real date string -- checked
+        # before trying fromisoformat() because Python 3.11+ parses some bare digit strings
+        # as valid-looking (but wrong) dates instead of raising (e.g. "1767033000000" is
+        # silently read as year 1767, month 03, day 30 -- no exception, so the epoch-ms
+        # fallback below would never run if this weren't checked first).
+        value_int = int(stripped)
+        if len(digits) == 13:
+            value_int //= 1000
+        return datetime.fromtimestamp(value_int)
     try:
-        return datetime.fromisoformat(value)
-    except ValueError:
-        try:
-            value_int = int(value)
-            if len(value) == 13:
-                value_int //= 1000
-            return datetime.fromtimestamp(value_int)
-        except ValueError as error:
-            raise ValueError(f"Invalid date format: {value}") from error
+        return datetime.fromisoformat(stripped)
+    except ValueError as error:
+        raise ValueError(f"Invalid date format: {value}") from error
 
 
 def load_candles_from_csv(path: str, start_date: str | None = None, end_date: str | None = None) -> list[list]:
@@ -135,12 +147,17 @@ def print_effective_config(config: BacktestConfig, capital: float) -> None:
             ["Max open positions", str(config.max_open_positions)],
             ["Max trades/day", str(config.max_trades_per_day)],
             ["Max daily loss", _fmt_pct(config.max_daily_loss_pct)],
+            ["Max drawdown (halts new trades)", _fmt_pct(config.max_drawdown_pct)],
             ["Max consecutive losses", str(config.max_consecutive_losses) if config.max_consecutive_losses else "disabled"],
             ["Cooldown period (ticks)", str(config.cooldown_period) if config.max_consecutive_losses else "n/a"],
             ["Min entry spacing (ticks)", str(config.min_entry_spacing_ticks) if config.min_entry_spacing_ticks else "disabled"],
             ["HTF regime filter", f"enabled ({config.htf_filter_mode})" if config.htf_filter_enabled else "disabled"],
             ["Long only (no shorts)", "YES" if config.long_only else "no"],
             ["Stop/target mode", "ATR-based" if config.use_atr_stop else "fixed %"],
+            ["Trailing stop", _fmt_pct(config.trailing_stop_pct)],
+            ["Leverage", f"{config.leverage:g}x ({config.margin_type})" if config.leverage > 1.0 else "1x (spot-equivalent)"],
+            ["Max position notional", _fmt_money(config.max_position_notional) if config.max_position_notional != float("inf") else "uncapped"],
+            ["Funding cost modeled", "YES" if config.funding_enabled else "no"],
         ],
     )
 
@@ -154,6 +171,8 @@ def print_backtest_report(
 ) -> None:
     trades = result.trades
     total_fees = sum(trade.fees for trade in trades)
+    total_funding_cost = sum(trade.funding_cost for trade in trades)
+    liquidations = sum(1 for trade in trades if trade.exit_reason == "liquidation")
     wins = [trade.pnl for trade in trades if trade.pnl > 0]
     losses = [trade.pnl for trade in trades if trade.pnl < 0]
     avg_win = sum(wins) / len(wins) if wins else 0.0
@@ -175,6 +194,8 @@ def print_backtest_report(
             ["Win rate", _fmt_pct(report.win_rate)],
             ["Total P&L", _fmt_money(report.total_pnl)],
             ["Total fees paid", _fmt_money(total_fees)],
+            *([["Total funding cost", _fmt_money(total_funding_cost)]] if total_funding_cost != 0.0 else []),
+            *([["Liquidations", str(liquidations)]] if liquidations else []),
             ["Starting capital", _fmt_money(start_capital)],
             ["Final capital", _fmt_money(result.final_capital)],
             ["Return", _fmt_pct(return_pct)],
@@ -187,6 +208,14 @@ def print_backtest_report(
             ["Max drawdown", _fmt_pct(report.max_drawdown)],
         ],
     )
+
+    if result.max_drawdown_halt_date:
+        print(
+            f"\n*** No new trades opened after {result.max_drawdown_halt_date} -- the max-drawdown "
+            f"circuit breaker tripped and stayed tripped for the rest of the window. Everything above "
+            f"reflects only the period before that date; the report is silent about the rest of the "
+            f"range, not flat because nothing happened. Raise --max-drawdown-pct to see further. ***"
+        )
 
     if trades:
         reason_counts = Counter(trade.exit_reason for trade in trades)
@@ -232,6 +261,75 @@ def print_backtest_report(
         print("\nNo trades were executed during this backtest window.")
 
 
+def _trade_entry_datetime(trade, candles: list[list]) -> datetime:
+    """trade.timestamp is the entry candle's array index (as a string), not a real date --
+    look the real entry time up in the candle series used for this run."""
+    return parse_date(candles[int(trade.timestamp)][0])
+
+
+def compute_periodic_breakdown(
+    result: BacktestResult, candles: list[list], start_capital: float, period: str
+) -> list[dict]:
+    """Groups trades by calendar month or quarter (by entry date) and computes each
+    period's win rate, P&L, and compounding-aware return, using the equity curve rather
+    than a flat pnl/capital ratio so returns chain correctly period to period."""
+    periods: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    for i, trade in enumerate(result.trades):
+        dt = _trade_entry_datetime(trade, candles)
+        if period == "quarter":
+            key = (dt.year, (dt.month - 1) // 3 + 1)
+        else:
+            key = (dt.year, dt.month)
+        if key not in periods:
+            periods[key] = {
+                "key": key, "trades": [], "start_equity": result.equity_curve[i],
+            }
+            order.append(key)
+        periods[key]["trades"].append(trade)
+        periods[key]["end_equity"] = result.equity_curve[i + 1]
+
+    rows = []
+    for key in order:
+        p = periods[key]
+        trades = p["trades"]
+        wins = sum(1 for t in trades if t.pnl > 0)
+        long_trades = sum(1 for t in trades if t.side == "buy")
+        short_trades = len(trades) - long_trades
+        pnl = sum(t.pnl for t in trades)
+        start_equity = p["start_equity"]
+        end_equity = p["end_equity"]
+        return_pct = (end_equity - start_equity) / start_equity if start_equity else 0.0
+        if period == "quarter":
+            label = f"{key[0]} Q{key[1]}"
+        else:
+            label = datetime(key[0], key[1], 1).strftime("%Y-%m (%b)")
+        rows.append({
+            "label": label, "trades": len(trades), "wins": wins,
+            "win_rate": wins / len(trades) if trades else 0.0,
+            "long_trades": long_trades, "short_trades": short_trades,
+            "pnl": pnl, "return_pct": return_pct, "end_equity": end_equity,
+        })
+    return rows
+
+
+def print_periodic_report(rows: list[dict], title: str) -> None:
+    if len(rows) < 2:
+        return  # a single period adds nothing the overall summary doesn't already show
+    print(f"\n=== {title} ===\n")
+    _print_table(
+        ["Period", "Trades", "Win rate", "Long/Short", "P&L", "Return", "Capital (end)"],
+        [
+            [
+                r["label"], str(r["trades"]), _fmt_pct(r["win_rate"]),
+                f"{r['long_trades']}/{r['short_trades']}", _fmt_money(r["pnl"]),
+                _fmt_pct(r["return_pct"]), _fmt_money(r["end_equity"]),
+            ]
+            for r in rows
+        ],
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Trading bot CLI")
     parser.add_argument("--config", default=None, help="Path to central JSON config file")
@@ -239,6 +337,9 @@ def main() -> None:
     parser.add_argument("--csv", help="Path to a CSV file containing historical candle data")
     parser.add_argument("--symbol", help="Trading symbol to use for backtesting or live mode")
     parser.add_argument("--capital", type=float, help="Capital size for the bot and backtester")
+    parser.add_argument("--leverage", type=float, help="Leverage for futures backtesting (overrides config.json's backtest.leverage; 1.0 = spot-equivalent, no leverage)")
+    parser.add_argument("--trailing-stop-pct", type=float, help="Trailing-stop distance as a fraction, e.g. 0.015 for 1.5%% (overrides config.json's backtest.trailing_stop_pct)")
+    parser.add_argument("--max-drawdown-pct", type=float, help="Peak-to-trough equity drawdown, as a fraction, at which the backtest permanently stops opening new trades for the rest of the run (overrides config.json's backtest.max_drawdown_pct; default 0.05 = 5%%)")
     parser.add_argument("--timeframe", help="Candlestick timeframe for backtesting")
     parser.add_argument("--start-date", help="ISO date or timestamp to start backtest from")
     parser.add_argument("--end-date", help="ISO date or timestamp to end backtest at")
@@ -310,6 +411,7 @@ def main() -> None:
             timeframe=timeframe,
             risk_per_trade_pct=config.backtest.risk_per_trade_pct,
             max_daily_loss_pct=config.backtest.max_daily_loss_pct,
+            max_drawdown_pct=args.max_drawdown_pct if args.max_drawdown_pct is not None else config.backtest.max_drawdown_pct,
             max_trades_per_day=config.backtest.max_trades_per_day,
             max_open_positions=config.backtest.max_open_positions,
             max_position_pct=config.backtest.max_position_pct,
@@ -322,7 +424,7 @@ def main() -> None:
             take_profit_pct=config.backtest.take_profit_pct,
             partial_exit_profit_pct=config.backtest.partial_exit_profit_pct,
             partial_exit_qty_pct=config.backtest.partial_exit_qty_pct,
-            trailing_stop_pct=config.backtest.trailing_stop_pct,
+            trailing_stop_pct=args.trailing_stop_pct if args.trailing_stop_pct is not None else config.backtest.trailing_stop_pct,
             use_atr_stop=config.backtest.use_atr_stop,
             atr_period=config.backtest.atr_period,
             atr_multiplier=config.backtest.atr_multiplier,
@@ -333,11 +435,33 @@ def main() -> None:
             htf_short_period=config.backtest.htf_short_period,
             htf_long_period=config.backtest.htf_long_period,
             long_only=config.backtest.long_only,
+            leverage=args.leverage if args.leverage is not None else config.backtest.leverage,
+            max_leverage=config.backtest.max_leverage,
+            margin_type=config.backtest.margin_type,
+            liquidation_buffer_pct=config.backtest.liquidation_buffer_pct,
+            max_position_notional=config.backtest.max_position_notional,
+            maintenance_margin_rate=config.backtest.maintenance_margin_rate,
+            funding_enabled=config.backtest.funding_enabled,
         )
         print_effective_config(backtest_config, capital)
+
+        funding_rates = None
+        if backtest_config.funding_enabled:
+            if args.start_date and args.end_date:
+                funding_start_ms = int(parse_date(args.start_date).timestamp() * 1000)
+                funding_end_ms = int(parse_date(args.end_date).timestamp() * 1000)
+            else:
+                # Fall back to the candle data's own timeline when no explicit --start-date/
+                # --end-date were given (e.g. running against a pre-existing --csv file).
+                funding_start_ms = int(parse_date(candles[0][0]).timestamp() * 1000)
+                funding_end_ms = int(parse_date(candles[-1][0]).timestamp() * 1000)
+            print(f"Fetching historical funding rates for {symbol} from Binance...")
+            funding_rates = BinanceDataFeed().get_funding_rate_history(symbol, funding_start_ms, funding_end_ms)
+            print(f"Fetched {len(funding_rates)} funding rate entries.")
+
         telemetry = Telemetry(enabled=True, logger=print if args.verbose else None)
         backtester = Backtester(config=backtest_config, strategy_config=strategy_config, telemetry=telemetry)
-        result = backtester.run(candles)
+        result = backtester.run(candles, symbol=symbol, funding_rates=funding_rates)
         report = backtester.generate_report(result)
 
         exported_csv_path = None
@@ -352,20 +476,65 @@ def main() -> None:
             trade_log_limit=args.trade_log_limit,
             exported_csv_path=exported_csv_path,
         )
+        if result.trades:
+            print_periodic_report(
+                compute_periodic_breakdown(result, candles, capital, period="quarter"),
+                "QUARTERLY BREAKDOWN",
+            )
+            print_periodic_report(
+                compute_periodic_breakdown(result, candles, capital, period="month"),
+                "MONTHLY BREAKDOWN",
+            )
         return
 
     symbol = args.symbol or config.symbol
     execution_mode = args.execution_mode or config.live.execution_mode
     market_type = config.live.market_type
-    if market_type != "spot":
-        print(
-            f"market_type '{market_type}' is not implemented yet -- only 'spot' is supported. "
-            "(This is a reserved config field for possible future Binance Futures support.)"
-        )
+    if market_type not in ("spot", "futures"):
+        print(f"market_type '{market_type}' is not supported -- use 'spot' or 'futures'.")
         return
 
     symbol_filters = None
-    if execution_mode == "testnet":
+    futures_client = None
+    if market_type == "futures":
+        if execution_mode == "testnet":
+            from app.binance_futures_client import BinanceFuturesTestnetClient
+
+            try:
+                futures_client = BinanceFuturesTestnetClient()
+            except ValueError as error:
+                print(f"Cannot start live bot: {error}")
+                return
+            order_executor = FuturesTestnetOrderExecutor(client=futures_client)
+            symbol_filters = futures_client.get_symbol_filters(symbol)
+        elif execution_mode == "live":
+            from app.binance_futures_client import BinanceFuturesLiveClient
+
+            try:
+                futures_client = BinanceFuturesLiveClient()
+                for warning in futures_client.assert_safe_to_trade():
+                    print(f"WARNING: {warning}")
+            except ValueError as error:
+                print(f"Cannot start live bot: {error}")
+                return
+            order_executor = FuturesLiveOrderExecutor(client=futures_client)
+            symbol_filters = futures_client.get_symbol_filters(symbol)
+            print("\n" + "=" * 60)
+            print("  WARNING: execution_mode=live, market_type=futures -- REAL MONEY, LEVERAGED ORDERS")
+            print("=" * 60 + "\n")
+        else:
+            print(
+                "NOTE: execution_mode=simulated with market_type=futures cannot exercise leverage, "
+                "margin-type, position-mode, liquidation-buffer, margin-ratio, or funding safety "
+                "checks -- there is no real futures account to query. Use execution_mode=testnet "
+                "for that."
+            )
+            order_executor = SimulatedOrderExecutor(
+                trade_fee_pct=config.backtest.trade_fee_pct,
+                slippage_pct=config.backtest.slippage_pct,
+                data_feed=BinanceDataFeed(),
+            )
+    elif execution_mode == "testnet":
         from app.binance_client import BinanceTestnetClient
 
         try:
@@ -400,6 +569,8 @@ def main() -> None:
         runner = LiveRunner(
             order_executor=order_executor,
             symbol_filters=symbol_filters,
+            futures_client=futures_client,
+            market_type=market_type,
             risk_config=RiskConfig(
                 capital=capital,
                 risk_per_trade_pct=config.risk.risk_per_trade_pct,
@@ -413,6 +584,14 @@ def main() -> None:
                 cooldown_period=config.risk.cooldown_period,
                 min_entry_spacing_ticks=config.risk.min_entry_spacing_ticks,
                 compounding_enabled=config.risk.compounding_enabled,
+                leverage=config.risk.leverage,
+                max_leverage=config.risk.max_leverage,
+                margin_type=config.risk.margin_type,
+                liquidation_buffer_pct=config.risk.liquidation_buffer_pct,
+                max_position_notional=config.risk.max_position_notional,
+                maintenance_margin_rate=config.risk.maintenance_margin_rate,
+                margin_ratio_warn_pct=config.risk.margin_ratio_warn_pct,
+                margin_ratio_force_close_pct=config.risk.margin_ratio_force_close_pct,
             ),
             strategy_config=strategy_config,
             symbol=symbol,

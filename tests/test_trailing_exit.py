@@ -8,7 +8,7 @@ def test_trailing_exit_model_updates_stop_loss():
     price = 100.0
     for _ in range(25):
         price += 0.5
-        candles.append([0, 0, 0, 0, price, price])
+        candles.append([0, price, price, price, price, price])
     result = backtester.run(candles)
     assert len(result.trades) >= 1
     assert any(trade.partial_exits for trade in result.trades)

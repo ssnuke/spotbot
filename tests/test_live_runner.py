@@ -15,6 +15,82 @@ class FakeBinanceClient:
         return {"orderId": "FAKE", "fills": [{"qty": str(quantity), "price": "100.0", "commission": "0.0"}]}
 
 
+class FakeFuturesClient:
+    """Stands in for BinanceFuturesTestnetClient/BinanceFuturesLiveClient in tests -- no real
+    network calls. Configurable so individual tests can force failures or specific
+    mark-price/position-risk/funding scenarios."""
+
+    def __init__(
+        self,
+        mark_price=100.0,
+        position_risk=None,
+        funding_payments=None,
+        fail_position_mode=False,
+        fail_margin_type=False,
+        fail_leverage=False,
+    ):
+        self.mark_price = mark_price
+        self.position_risk = position_risk
+        self.funding_payments = funding_payments or []
+        self.fail_position_mode = fail_position_mode
+        self.fail_margin_type = fail_margin_type
+        self.fail_leverage = fail_leverage
+        self.cancel_all_calls = 0
+        self.set_leverage_calls = []
+        self.set_margin_type_calls = []
+
+    def set_position_mode(self, dual_side=False):
+        if self.fail_position_mode:
+            raise RuntimeError("simulated position mode failure")
+        return {"dualSidePosition": dual_side}
+
+    def set_margin_type(self, symbol, margin_type):
+        if self.fail_margin_type:
+            raise RuntimeError("simulated margin type failure")
+        self.set_margin_type_calls.append((symbol, margin_type))
+        return {}
+
+    def set_leverage(self, symbol, leverage):
+        if self.fail_leverage:
+            raise RuntimeError("simulated leverage failure")
+        self.set_leverage_calls.append((symbol, leverage))
+        return {}
+
+    def get_position_mode(self):
+        return {"dualSidePosition": False}
+
+    def get_mark_price(self, symbol):
+        return self.mark_price
+
+    def get_position_risk(self, symbol):
+        return self.position_risk
+
+    def cancel_all_open_orders(self, symbol):
+        self.cancel_all_calls += 1
+        return {}
+
+    def get_funding_payments(self, symbol, start_time_ms):
+        return self.funding_payments
+
+    def place_market_order(self, symbol, side, quantity, reduce_only=False):
+        return {
+            "orderId": "FAKE-FUT",
+            "fills": [{"qty": str(quantity), "price": str(self.mark_price), "commission": "0.0"}],
+        }
+
+
+class RecordingOrderExecutor:
+    """Wraps a SimulatedOrderExecutor and records every place_order call's reduce_only flag."""
+
+    def __init__(self):
+        self._inner = SimulatedOrderExecutor(trade_fee_pct=0.0, slippage_pct=0.0)
+        self.calls = []
+
+    def place_order(self, symbol, side, quantity, reference_price, reduce_only=False):
+        self.calls.append({"side": side, "quantity": quantity, "reduce_only": reduce_only})
+        return self._inner.place_order(symbol, side, quantity, reference_price)
+
+
 class FailingOrderExecutor:
     """Every order placement raises, simulating a rejected order / network failure."""
 
@@ -137,7 +213,7 @@ def test_open_position_persists_and_updates_risk_manager():
     open_trades = runner.store.list_open_trades()
     assert len(open_trades) == 1
     assert open_trades[0].side == "buy"
-    assert runner.risk_manager.allocated_capital > 0
+    assert runner.risk_manager.allocated_margin > 0
 
 
 def test_long_only_skips_sell_signals_and_never_opens_a_short():
@@ -161,7 +237,7 @@ def test_failed_order_placement_releases_reserved_capital_and_daily_trade_slot()
     runner = _make_runner(_make_candles(closes), order_executor=FailingOrderExecutor())
 
     daily_trades_before = runner.risk_manager.daily_trades
-    allocated_before = runner.risk_manager.allocated_capital
+    allocated_before = runner.risk_manager.allocated_margin
 
     runner.run_once()  # signal fires, order placement raises
 
@@ -169,7 +245,7 @@ def test_failed_order_placement_releases_reserved_capital_and_daily_trade_slot()
     assert runner.risk_manager.open_positions == 0
     # The reservation create_trade_plan() made must be fully released, not left dangling.
     assert runner.risk_manager.daily_trades == daily_trades_before
-    assert runner.risk_manager.allocated_capital == pytest.approx(allocated_before)
+    assert runner.risk_manager.allocated_margin == pytest.approx(allocated_before)
 
 
 def test_failed_order_placement_does_not_permanently_block_future_trades():
@@ -625,7 +701,7 @@ def test_reduced_capital_with_open_positions_does_not_permanently_block_new_trad
     store = StateStore(":memory:")
     old_risk_config = RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_position_pct=0.1)
     persisted_manager = RiskManager(old_risk_config)
-    persisted_manager.allocated_capital = 15000.0
+    persisted_manager.allocated_margin = 15000.0
     persisted_manager.open_positions = 3
     store.save_risk_state(persisted_manager, current_day="2026-07-23")
 
@@ -635,7 +711,7 @@ def test_reduced_capital_with_open_positions_does_not_permanently_block_new_trad
         risk_config=RiskConfig(capital=300, risk_per_trade_pct=0.005, max_position_pct=0.1),
     )
 
-    assert runner.risk_manager.allocated_capital == 300.0
+    assert runner.risk_manager.allocated_margin == 300.0
     assert runner.risk_manager._available_capital() == 0.0
 
 
@@ -705,3 +781,221 @@ def test_daily_trades_not_consumed_when_order_below_exchange_minimum():
 
     assert runner.store.list_open_trades() == []  # order was skipped, never actually opened
     assert runner.risk_manager.daily_trades == 0  # and didn't silently eat a daily-trade slot
+
+
+def _seed_open_trade(runner, side="buy", entry_price=190.0, stop_loss=100.0, take_profit=300.0, trailing_stop=100.0):
+    """Directly seeds an open position, as if opened on a prior poll -- bounds are set far
+    outside any test price series by default so _check_open_trades won't close it on its own."""
+    trade = OpenTradeState(
+        id=None, symbol="BTC/USDT", side=side, entry_price=entry_price, entry_execution_price=entry_price,
+        stop_loss=stop_loss, take_profit=take_profit, quantity=1.0, remaining_quantity=1.0,
+        trailing_stop=trailing_stop, partial_exit_done=False, entry_order_id="SEED",
+        opened_at="2026-01-01T00:00:00", notional=entry_price, margin_required=entry_price,
+    )
+    runner.store.add_open_trade(trade)
+    runner.risk_manager.open_positions = 1
+    runner.risk_manager.current_side = side
+
+
+def test_futures_startup_verification_success_configures_leverage_and_margin_type():
+    futures_client = FakeFuturesClient()
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=futures_client,
+        market_type="futures",
+        risk_config=RiskConfig(capital=100, leverage=2.0, margin_type="ISOLATED"),
+    )
+
+    assert runner._ensure_futures_account_configured() is True
+    assert futures_client.set_leverage_calls == [("BTC/USDT", 2.0)]
+    assert futures_client.set_margin_type_calls == [("BTC/USDT", "ISOLATED")]
+
+
+def test_futures_startup_verification_failure_refuses_to_start():
+    notifier = FakeNotifier()
+    futures_client = FakeFuturesClient(fail_leverage=True)
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=futures_client,
+        market_type="futures",
+        notifier=notifier,
+        risk_config=RiskConfig(capital=100, leverage=2.0),
+    )
+
+    assert runner._ensure_futures_account_configured() is False
+    assert any("refusing to start" in message for message in notifier.sent)
+
+    # run_forever() must return immediately without ever sending a "bot started" message.
+    runner.run_forever()
+    assert not any("Bot started" in message for message in notifier.sent)
+
+
+def test_opposite_signal_closes_position_before_reopening():
+    prices = [200.0 - i * 0.5 for i in range(50)]
+    prices += [176.2, 177.0, 177.6]  # bounce toward resistance
+    prices += [177.4, 176.9, 176.2]  # reversal back down -- a "sell" signal on the last candle
+    runner = _make_runner(_make_candles(prices))
+    _seed_open_trade(runner, side="buy")  # bounds far outside this series, won't self-trigger a close
+
+    runner.run_once()
+
+    assert runner.store.list_open_trades() == []
+    records = runner.store.list_recent_trade_history(limit=1)
+    assert records[0].exit_reason == "signal_reversal"
+    # The reversal close returns immediately -- no new (opposite-side) position opened same poll.
+    assert runner.risk_manager.open_positions == 0
+
+
+def test_close_orders_are_placed_reduce_only():
+    executor = RecordingOrderExecutor()
+    runner = _make_runner(_make_candles([100.0] * 5), order_executor=executor)
+    _seed_open_trade(runner, side="buy", take_profit=100.0)  # current price already at/above target
+
+    runner.run_once()
+
+    assert executor.calls, "expected a close order to have been placed"
+    assert executor.calls[-1]["reduce_only"] is True
+
+
+def test_margin_ratio_force_close_triggers_emergency_close_and_pauses():
+    # entry=100, liquidation=90 (distance 10), mark=93.5 (distance-to-liq 3.5) -> margin_ratio
+    # = 1 - 3.5/10 = 0.65, exactly at the default force-close threshold.
+    position_risk = {"entryPrice": "100.0", "markPrice": "93.5", "liquidationPrice": "90.0"}
+    notifier = FakeNotifier()
+    futures_client = FakeFuturesClient(mark_price=93.5, position_risk=position_risk)
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=futures_client,
+        market_type="futures",
+        notifier=notifier,
+        risk_config=RiskConfig(capital=100, leverage=5.0, margin_ratio_force_close_pct=0.65),
+    )
+    _seed_open_trade(runner, side="buy", entry_price=100.0)
+
+    runner._check_futures_safety()
+
+    assert runner.store.list_open_trades() == []
+    assert runner._trading_paused is True
+    assert futures_client.cancel_all_calls == 1
+    assert any("EMERGENCY CLOSE" in message for message in notifier.sent)
+
+
+def test_margin_ratio_warning_does_not_close_position():
+    # margin_ratio = 1 - 6/10 = 0.40, exactly at the default warn threshold, below force-close.
+    position_risk = {"entryPrice": "100.0", "markPrice": "84.0", "liquidationPrice": "90.0"}
+    notifier = FakeNotifier()
+    futures_client = FakeFuturesClient(mark_price=84.0, position_risk=position_risk)
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=futures_client,
+        market_type="futures",
+        notifier=notifier,
+        risk_config=RiskConfig(capital=100, leverage=5.0, margin_ratio_warn_pct=0.40, margin_ratio_force_close_pct=0.65),
+    )
+    _seed_open_trade(runner, side="buy", entry_price=100.0)
+
+    runner._check_futures_safety()
+
+    assert len(runner.store.list_open_trades()) == 1  # still open
+    assert runner._trading_paused is False
+    assert any("Margin ratio warning" in message for message in notifier.sent)
+
+
+def test_mark_price_divergence_kill_requires_sustained_ticks():
+    futures_client = FakeFuturesClient(mark_price=110.0)  # 10% above last price -> over 1% default
+    notifier = FakeNotifier()
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=futures_client,
+        market_type="futures",
+        data_feed=FakeDataFeed(_make_candles([100.0] * 5), latest_price=100.0),
+        notifier=notifier,
+        risk_config=RiskConfig(capital=100, leverage=2.0),
+    )
+    _seed_open_trade(runner, side="buy", entry_price=100.0)
+
+    runner._check_futures_safety()  # tick 1
+    assert runner.store.list_open_trades()  # not yet -- default max_ticks is 3
+    runner._check_futures_safety()  # tick 2
+    assert runner.store.list_open_trades()
+    runner._check_futures_safety()  # tick 3 -- sustained divergence, now triggers
+    assert runner.store.list_open_trades() == []
+    assert any("mark_price_divergence" in message for message in notifier.sent)
+
+
+def test_mark_price_divergence_resets_on_a_normal_tick():
+    futures_client = FakeFuturesClient(mark_price=110.0)
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=futures_client,
+        market_type="futures",
+        data_feed=FakeDataFeed(_make_candles([100.0] * 5), latest_price=100.0),
+        risk_config=RiskConfig(capital=100, leverage=2.0),
+    )
+    _seed_open_trade(runner, side="buy", entry_price=100.0)
+
+    runner._check_futures_safety()
+    assert runner._mark_price_divergence_ticks == 1
+
+    futures_client.mark_price = 100.05  # back within tolerance
+    runner._check_futures_safety()
+    assert runner._mark_price_divergence_ticks == 0
+    assert runner.store.list_open_trades()  # never closed
+
+
+def test_funding_payments_applied_to_equity_and_cumulative_total():
+    futures_client = FakeFuturesClient(funding_payments=[{"income": "-1.5"}, {"income": "2.0"}])
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=futures_client,
+        market_type="futures",
+        risk_config=RiskConfig(capital=100, leverage=2.0),
+    )
+    equity_before = runner.risk_manager.equity
+
+    runner._check_funding_payments()
+
+    assert runner.cumulative_funding_paid == pytest.approx(0.5)
+    assert runner.risk_manager.equity == pytest.approx(equity_before + 0.5)
+
+
+def test_restart_revalidation_closes_already_breached_position():
+    # Persist an open trade and risk state as if from a prior process, then construct a new
+    # runner where the futures client reports the position already past the liquidation buffer.
+    store = StateStore(":memory:")
+    persisted_manager = RiskManager(RiskConfig(capital=100, leverage=5.0))
+    store.save_risk_state(persisted_manager, current_day="2026-07-23")
+    store.add_open_trade(
+        OpenTradeState(
+            id=None, symbol="BTC/USDT", side="buy", entry_price=100.0, entry_execution_price=100.0,
+            stop_loss=90.0, take_profit=300.0, quantity=1.0, remaining_quantity=1.0, trailing_stop=90.0,
+            partial_exit_done=False, entry_order_id="SEED", opened_at="2026-07-23T00:00:00",
+        )
+    )
+    position_risk = {"entryPrice": "100.0", "markPrice": "93.5", "liquidationPrice": "90.0"}
+    futures_client = FakeFuturesClient(mark_price=93.5, position_risk=position_risk)
+    notifier = FakeNotifier()
+
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        store=store,
+        futures_client=futures_client,
+        market_type="futures",
+        notifier=notifier,
+        risk_config=RiskConfig(capital=100, leverage=5.0, margin_ratio_force_close_pct=0.65),
+    )
+
+    # The breach must be handled during construction, before run_forever ever starts polling.
+    assert runner.store.list_open_trades() == []
+    assert any("restart_liquidation_check" in message for message in notifier.sent)
+
+
+def test_file_kill_switch_stops_the_loop(tmp_path):
+    kill_file = tmp_path / "KILL_SWITCH"
+    runner = _make_runner(_make_candles([100.0] * 5), kill_switch_file_path=str(kill_file))
+    assert runner._stop_requested is False
+
+    kill_file.write_text("stop")
+    runner._check_kill_switch_file()
+
+    assert runner._stop_requested is True

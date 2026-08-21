@@ -7,6 +7,12 @@ from typing import List, Optional
 
 def _parse_datetime(candle) -> datetime:
     timestamp = candle[0]
+    if isinstance(timestamp, str) and timestamp.isdigit():
+        # A pure-digit string is an epoch timestamp, not a real date string -- checked before
+        # fromisoformat() because Python 3.11+ parses some bare digit strings as valid-looking
+        # (but wrong) dates instead of raising (e.g. "1767033000000" silently reads as year
+        # 1767, month 03, day 30).
+        timestamp = int(timestamp)
     if isinstance(timestamp, str):
         return datetime.fromisoformat(timestamp)
     if isinstance(timestamp, (int, float)):

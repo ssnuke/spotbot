@@ -4,11 +4,14 @@ from dataclasses import dataclass
 from typing import Optional, Protocol
 
 from app.binance_client import BinanceLiveClient, BinanceTestnetClient
+from app.binance_futures_client import BinanceFuturesLiveClient, BinanceFuturesTestnetClient
 from app.data_feed import BinanceDataFeed
 
 
 class OrderExecutor(Protocol):
-    def place_order(self, symbol: str, side: str, quantity: float, reference_price: float) -> dict: ...
+    def place_order(
+        self, symbol: str, side: str, quantity: float, reference_price: float, reduce_only: bool = False
+    ) -> dict: ...
 
 
 @dataclass
@@ -23,7 +26,9 @@ class SimulatedOrderExecutor:
     slippage_pct: float = 0.0005
     data_feed: Optional[BinanceDataFeed] = None
 
-    def place_order(self, symbol: str, side: str, quantity: float, reference_price: float) -> dict:
+    def place_order(
+        self, symbol: str, side: str, quantity: float, reference_price: float, reduce_only: bool = False
+    ) -> dict:
         is_buy = side.upper() == "BUY"
         book = self.data_feed.get_book_ticker(symbol) if self.data_feed else None
 
@@ -46,7 +51,9 @@ class TestnetOrderExecutor:
 
     client: BinanceTestnetClient
 
-    def place_order(self, symbol: str, side: str, quantity: float, reference_price: float) -> dict:
+    def place_order(
+        self, symbol: str, side: str, quantity: float, reference_price: float, reduce_only: bool = False
+    ) -> dict:
         return self.client.place_market_order(symbol, side, quantity)
 
 
@@ -56,5 +63,31 @@ class LiveOrderExecutor:
 
     client: BinanceLiveClient
 
-    def place_order(self, symbol: str, side: str, quantity: float, reference_price: float) -> dict:
+    def place_order(
+        self, symbol: str, side: str, quantity: float, reference_price: float, reduce_only: bool = False
+    ) -> dict:
         return self.client.place_market_order(symbol, side, quantity)
+
+
+@dataclass
+class FuturesTestnetOrderExecutor:
+    """Places real (fake-funds) leveraged orders against Binance's USDT-M Futures Testnet."""
+
+    client: BinanceFuturesTestnetClient
+
+    def place_order(
+        self, symbol: str, side: str, quantity: float, reference_price: float, reduce_only: bool = False
+    ) -> dict:
+        return self.client.place_market_order(symbol, side, quantity, reduce_only=reduce_only)
+
+
+@dataclass
+class FuturesLiveOrderExecutor:
+    """Places REAL leveraged orders with REAL funds on Binance's production USDT-M Futures exchange."""
+
+    client: BinanceFuturesLiveClient
+
+    def place_order(
+        self, symbol: str, side: str, quantity: float, reference_price: float, reduce_only: bool = False
+    ) -> dict:
+        return self.client.place_market_order(symbol, side, quantity, reduce_only=reduce_only)

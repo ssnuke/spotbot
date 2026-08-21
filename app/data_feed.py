@@ -81,3 +81,43 @@ class BinanceDataFeed:
             current_start = last_open_time + 1
 
         return all_klines
+
+    def get_funding_rate_history(
+        self,
+        symbol: str,
+        start_time_ms: int,
+        end_time_ms: int,
+        limit: int = 1000,
+    ) -> list[dict]:
+        """Historical USDT-M futures funding rates for backtesting funding cost. Public,
+        unsigned endpoint -- lives on the futures host (fapi.binance.com), not this class's
+        default spot base_url, so it's hardcoded here rather than following self.base_url."""
+        url = "https://fapi.binance.com/fapi/v1/fundingRate"
+        symbol_key = symbol.upper().replace("/", "")
+        all_entries: list[dict] = []
+        current_start = start_time_ms
+
+        while current_start < end_time_ms:
+            params = {
+                "symbol": symbol_key,
+                "startTime": current_start,
+                "endTime": end_time_ms,
+                "limit": limit,
+            }
+            try:
+                response = requests.get(url, params=params, timeout=10)
+                response.raise_for_status()
+                payload = response.json()
+            except requests.RequestException:
+                break
+
+            if not payload:
+                break
+
+            all_entries.extend(payload)
+            last_funding_time = int(payload[-1]["fundingTime"])
+            if last_funding_time <= current_start:
+                break
+            current_start = last_funding_time + 1
+
+        return all_entries
