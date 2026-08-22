@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trading Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: light;
+    --page: #f9f9f7;
+    --surface: #ffffff;
+    --ink: #0b0b0b;
+    --ink-secondary: #52514e;
+    --ink-muted: #898781;
+    --gridline: #e1e0d9;
+    --border: rgba(11,11,11,0.10);
+    --accent: #2a78d6;
+    --good: #0ca30c;
+    --bad: #d03b3b;
+    --shadow: 0 1px 2px rgba(11,11,11,0.04), 0 8px 24px rgba(11,11,11,0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --page: #0d0d0d;
+      --surface: #1a1a19;
+      --ink: #ffffff;
+      --ink-secondary: #c3c2b7;
+      --ink-muted: #898781;
+      --gridline: #2c2c2a;
+      --border: rgba(255,255,255,0.10);
+      --accent: #3987e5;
+      --good: #1fbf1f;
+      --bad: #e66767;
+      --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.4);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 28px 18px 80px; }
+  h1, h2 { font-family: "Fraunces", Georgia, serif; font-weight: 600; margin: 0; }
+  header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
+  header h1 { font-size: 1.5rem; }
+  .status-pill {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--good);
+    color: #ffffff;
+  }
+  .status-pill.stale { background: var(--ink-muted); }
+
+  .stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    box-shadow: var(--shadow);
+  }
+  .stat-card .label { font-family: "IBM Plex Mono", monospace; font-size: 0.68rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-muted); margin-bottom: 6px; }
+  .stat-card .value { font-family: "IBM Plex Mono", monospace; font-size: 1.25rem; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .stat-card .value.good { color: var(--good); }
+  .stat-card .value.bad { color: var(--bad); }
+
+  section { margin-top: 28px; }
+  section h2 { font-size: 1.1rem; margin-bottom: 12px; }
+
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px; box-shadow: var(--shadow); }
+  .chart-svg { width: 100%; height: auto; display: block; }
+  .gridline { stroke: var(--gridline); stroke-width: 1; }
+  .axislabel { font-family: "IBM Plex Mono", monospace; font-size: 10px; fill: var(--ink-muted); }
+  .eq-area { fill: var(--accent); opacity: 0.12; }
+  .eq-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+  .eq-dot { fill: var(--accent); }
+
+  .position-card { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; background: var(--surface); box-shadow: var(--shadow); margin-bottom: 10px; }
+  .position-card + .position-card { margin-top: 10px; }
+  .position-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+  .side-badge { font-family: "IBM Plex Mono", monospace; font-size: 0.7rem; letter-spacing: 0.05em; text-transform: uppercase; padding: 2px 8px; border-radius: 6px; }
+  .side-badge.buy { background: rgba(12,163,12,0.15); color: var(--good); }
+  .side-badge.sell { background: rgba(208,59,59,0.15); color: var(--bad); }
+  .position-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px 16px; font-family: "IBM Plex Mono", monospace; font-size: 0.85rem; }
+  .position-grid dt { font-size: 0.65rem; color: var(--ink-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .position-grid dd { margin: 2px 0 0; font-variant-numeric: tabular-nums; }
+  .empty-state { color: var(--ink-muted); font-size: 0.9rem; padding: 20px; text-align: center; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  thead th { text-align: right; font-family: "IBM Plex Mono", monospace; font-size: 0.65rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-muted); font-weight: 500; padding: 0 8px 8px; border-bottom: 1px solid var(--gridline); white-space: nowrap; }
+  thead th:first-child, thead th:nth-child(2) { text-align: left; }
+  tbody td { padding: 8px; border-bottom: 1px solid var(--gridline); white-space: nowrap; }
+  tbody td.num { text-align: right; font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; }
+  tbody tr:last-child td { border-bottom: none; }
+  .table-wrap { overflow-x: auto; }
+
+  .pager { display: flex; align-items: center; justify-content: center; gap: 16px; margin-top: 14px; font-family: "IBM Plex Mono", monospace; font-size: 0.85rem; }
+  .pager button { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 6px 14px; cursor: pointer; }
+  .pager button:disabled { opacity: 0.4; cursor: default; }
+  .pager button:not(:disabled):hover { border-color: var(--accent); }
+
+  footer { margin-top: 40px; text-align: center; color: var(--ink-muted); font-size: 0.75rem; font-family: "IBM Plex Mono", monospace; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1 id="symbol-title">Trading Dashboard</h1>
+    <span class="status-pill" id="status-pill">live</span>
+  </header>
+
+  <div class="stat-grid" id="stat-grid"></div>
+
+  <section>
+    <h2>Equity curve</h2>
+    <div class="card">
+      <div id="equity-chart"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Open positions</h2>
+    <div id="positions-list"></div>
+  </section>
+
+  <section>
+    <h2>Trade history</h2>
+    <div class="card">
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Closed</th>
+              <th>Side</th>
+              <th>Entry</th>
+              <th>Exit</th>
+              <th>Qty</th>
+              <th>Fees</th>
+              <th>PnL</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="trades-body"></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <button id="prev-page">&larr; Prev</button>
+        <span id="page-indicator">page 1</span>
+        <button id="next-page">Next &rarr;</button>
+      </div>
+    </div>
+  </section>
+
+  <footer id="last-updated">loading…</footer>
+</div>
+
+<script>
+const REFRESH_MS = 20000;
+let currentPage = 1;
+
+function fmtMoney(v) {
+  if (v === null || v === undefined) return "—";
+  const sign = v < 0 ? "-" : "";
+  return sign + "$" + Math.abs(v).toFixed(2);
+}
+function fmtPct(v) {
+  if (v === null || v === undefined) return "—";
+  const sign = v > 0 ? "+" : "";
+  return sign + v.toFixed(2) + "%";
+}
+function fmtDate(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+function pnlClass(v) {
+  return v > 0 ? "good" : v < 0 ? "bad" : "";
+}
+
+async function fetchJSON(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url} -> ${res.status}`);
+  return res.json();
+}
+
+function renderSummary(s) {
+  document.getElementById("symbol-title").textContent = s.symbol + " Dashboard";
+  const cards = [
+    ["Balance", fmtMoney(s.equity), ""],
+    ["Cumulative PnL", fmtMoney(s.cumulative_pnl), pnlClass(s.cumulative_pnl)],
+    ["Win rate", s.closed_trades ? fmtPct(s.win_rate_pct).replace("+", "") : "—", ""],
+    ["Closed trades", s.closed_trades, ""],
+    ["Max drawdown", fmtPct(-s.drawdown_pct).replace("+", "-").replace("--","-"), s.drawdown_pct > 20 ? "bad" : ""],
+    ["Open positions", s.open_positions, ""],
+  ];
+  const grid = document.getElementById("stat-grid");
+  grid.innerHTML = cards.map(([label, value, cls]) =>
+    `<div class="stat-card"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`
+  ).join("");
+}
+
+function renderEquityCurve(points) {
+  const container = document.getElementById("equity-chart");
+  if (!points || points.length < 2) {
+    container.innerHTML = '<div class="empty-state">Not enough closed trades yet for a curve.</div>';
+    return;
+  }
+  const W = 820, H = 240, padL = 54, padR = 12, padT = 16, padB = 24;
+  const values = points.map(p => p.equity);
+  const lo = Math.min(...values), hi = Math.max(...values);
+  const span = (hi - lo) || 1;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+  const x = i => padL + (i / (points.length - 1)) * plotW;
+  const y = v => padT + plotH - ((v - lo) / span) * plotH;
+
+  let line = "", area = "";
+  points.forEach((p, i) => {
+    const cmd = i === 0 ? "M" : "L";
+    line += `${cmd}${x(i).toFixed(1)},${y(p.equity).toFixed(1)} `;
+  });
+  area = `M${x(0).toFixed(1)},${(padT + plotH).toFixed(1)} L` + line.slice(1) + `L${x(points.length - 1).toFixed(1)},${(padT + plotH).toFixed(1)} Z`;
+
+  const gridlines = [];
+  for (let i = 0; i <= 3; i++) {
+    const v = lo + (span * i / 3);
+    const gy = y(v);
+    gridlines.push(`<line x1="${padL}" y1="${gy.toFixed(1)}" x2="${W - padR}" y2="${gy.toFixed(1)}" class="gridline" />`);
+    gridlines.push(`<text x="${padL - 8}" y="${(gy + 4).toFixed(1)}" class="axislabel" text-anchor="end">$${v.toFixed(0)}</text>`);
+  }
+
+  container.innerHTML = `
+    <svg viewBox="0 0 ${W} ${H}" class="chart-svg" role="img" aria-label="Equity curve">
+      ${gridlines.join("")}
+      <path d="${area}" class="eq-area" />
+      <path d="${line}" class="eq-line" />
+      <circle cx="${x(points.length - 1).toFixed(1)}" cy="${y(points[points.length - 1].equity).toFixed(1)}" r="4" class="eq-dot" />
+    </svg>`;
+}
+
+function renderPositions(positions) {
+  const list = document.getElementById("positions-list");
+  if (!positions.length) {
+    list.innerHTML = '<div class="card"><div class="empty-state">No open positions.</div></div>';
+    return;
+  }
+  list.innerHTML = positions.map(p => `
+    <div class="position-card">
+      <div class="position-head">
+        <span class="side-badge ${p.side}">${p.side}</span>
+        <span class="value ${pnlClass(p.unrealized_pnl)}" style="font-family:'IBM Plex Mono',monospace;font-size:1rem">${fmtMoney(p.unrealized_pnl)}</span>
+      </div>
+      <dl class="position-grid">
+        <div><dt>Entry</dt><dd>${p.entry_execution_price?.toFixed(4) ?? p.entry_price.toFixed(4)}</dd></div>
+        <div><dt>Mark</dt><dd>${p.mark_price ? p.mark_price.toFixed(4) : "—"}</dd></div>
+        <div><dt>Stop</dt><dd>${p.trailing_stop?.toFixed(4) ?? p.stop_loss.toFixed(4)}</dd></div>
+        <div><dt>Target</dt><dd>${p.take_profit.toFixed(4)}</dd></div>
+        <div><dt>Qty</dt><dd>${p.remaining_quantity}</dd></div>
+        <div><dt>Leverage</dt><dd>${p.leverage}x</dd></div>
+        <div><dt>Opened</dt><dd>${fmtDate(p.opened_at)}</dd></div>
+      </dl>
+    </div>
+  `).join("");
+}
+
+function renderTrades(data) {
+  const body = document.getElementById("trades-body");
+  if (!data.trades.length) {
+    body.innerHTML = '<tr><td colspan="8" class="empty-state">No closed trades yet.</td></tr>';
+  } else {
+    body.innerHTML = data.trades.map(t => `
+      <tr>
+        <td>${fmtDate(t.closed_at)}</td>
+        <td>${t.side}</td>
+        <td class="num">${t.entry_price.toFixed(4)}</td>
+        <td class="num">${t.exit_price.toFixed(4)}</td>
+        <td class="num">${t.quantity}</td>
+        <td class="num">${fmtMoney(t.fees)}</td>
+        <td class="num ${pnlClass(t.pnl)}">${fmtMoney(t.pnl)}</td>
+        <td>${t.exit_reason}</td>
+      </tr>
+    `).join("");
+  }
+  document.getElementById("page-indicator").textContent = `page ${data.page} of ${data.total_pages}`;
+  document.getElementById("prev-page").disabled = data.page <= 1;
+  document.getElementById("next-page").disabled = data.page >= data.total_pages;
+}
+
+async function refresh() {
+  try {
+    const [summary, curve, positions, trades] = await Promise.all([
+      fetchJSON("/api/summary"),
+      fetchJSON("/api/equity-curve"),
+      fetchJSON("/api/positions"),
+      fetchJSON(`/api/trades?page=${currentPage}&page_size=20`),
+    ]);
+    renderSummary(summary);
+    renderEquityCurve(curve);
+    renderPositions(positions);
+    renderTrades(trades);
+    document.getElementById("status-pill").classList.remove("stale");
+    document.getElementById("status-pill").textContent = "live";
+    document.getElementById("last-updated").textContent = "Updated " + new Date().toLocaleTimeString();
+  } catch (err) {
+    document.getElementById("status-pill").classList.add("stale");
+    document.getElementById("status-pill").textContent = "connection lost";
+    document.getElementById("last-updated").textContent = "Last update failed: " + err.message;
+  }
+}
+
+document.getElementById("prev-page").addEventListener("click", () => {
+  if (currentPage > 1) { currentPage -= 1; refresh(); }
+});
+document.getElementById("next-page").addEventListener("click", () => {
+  currentPage += 1; refresh();
+});
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>

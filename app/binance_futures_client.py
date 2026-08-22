@@ -82,7 +82,7 @@ class BinanceFuturesClient:
         liquidation price, position amount, notional, isolated margin), or None if the
         account has no open position on it."""
         params = {"symbol": symbol.upper().replace("/", "")}
-        payload = self._signed_request("GET", "/fapi/v3/positionInformation", params)
+        payload = self._signed_request("GET", "/fapi/v3/positionRisk", params)
         entries = payload if isinstance(payload, list) else [payload]
         for entry in entries:
             if float(entry.get("positionAmt", 0.0) or 0.0) != 0.0:
