@@ -1,0 +1,8 @@
+# Reverse proxy + automatic HTTPS for the dashboard. Caddy provisions and renews the
+# Let's Encrypt certificate on its own -- no certbot, no manual renewal cron needed.
+#
+# Replace your-bot-name.duckdns.org with your actual DuckDNS subdomain before installing.
+
+your-bot-name.duckdns.org {
+	reverse_proxy localhost:8080
+}
