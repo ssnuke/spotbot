@@ -93,11 +93,20 @@ class BinanceFuturesClient:
         return self._signed_request("GET", "/fapi/v3/account", {})
 
     def get_symbol_filters(self, symbol: str) -> FuturesSymbolFilters:
+        # Unlike spot's /api/v3/exchangeInfo, the futures endpoint does NOT filter by the
+        # `symbol` query param -- it always returns all ~900 symbols regardless. Blindly taking
+        # `symbols[0]` (as this used to) silently returns whatever symbol happens to be first
+        # in Binance's list (BTCUSDT), not the requested one -- a real production incident where
+        # every SOLUSDT order was rounded to BTC's quantity precision and rejected. Must search
+        # the returned list for the actual match.
+        symbol_key = symbol.upper().replace("/", "")
         url = f"{self.base_url}/fapi/v1/exchangeInfo"
-        response = requests.get(url, params={"symbol": symbol.upper().replace("/", "")}, timeout=10)
+        response = requests.get(url, timeout=10)
         response.raise_for_status()
         payload = response.json()
-        symbol_info = payload["symbols"][0]
+        symbol_info = next((s for s in payload["symbols"] if s["symbol"] == symbol_key), None)
+        if symbol_info is None:
+            raise ValueError(f"Symbol {symbol_key} not found in futures exchangeInfo")
 
         step_size = 1.0
         tick_size = 0.01

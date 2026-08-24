@@ -10,7 +10,7 @@
     "max_position_pct": 0.5,
     "max_consecutive_losses": 3,
     "cooldown_period": 144,
-    "min_entry_spacing_ticks": 0,
+    "min_entry_spacing_ticks": 5,
     "compounding_enabled": true,
     "leverage": 10.0,
     "max_leverage": 15.0,
@@ -66,8 +66,8 @@
     "min_signal_score": 0.60
   },
   "live": {
-    "timeframe": "1m",
-    "poll_interval_seconds": 60,
+    "timeframe": "5m",
+    "poll_interval_seconds": 300,
     "warmup_candles": 100,
     "stop_loss_pct": 0.01,
     "take_profit_pct": 0.03,
