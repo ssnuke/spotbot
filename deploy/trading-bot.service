@@ -7,7 +7,10 @@ Wants=network-online.target
 Type=simple
 User=botuser
 WorkingDirectory=/home/botuser/trading-bot
-ExecStart=/home/botuser/trading-bot/.venv/bin/python3 main.py --mode bot
+# -u disables stdout buffering -- without it, Python fully block-buffers stdout when it's
+# not a TTY (i.e. always, under systemd), so print() output (including order-failure logs)
+# can sit invisible in the buffer for a long time instead of reaching journalctl promptly.
+ExecStart=/home/botuser/trading-bot/.venv/bin/python3 -u main.py --mode bot
 Restart=always
 RestartSec=10
 StandardOutput=journal

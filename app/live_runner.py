@@ -186,14 +186,29 @@ class LiveRunner:
                 symbol, side, quantity, reference_price=reference_price, reduce_only=reduce_only
             )
             return order, quantity
-        except Exception:
+        except Exception as first_exc:
+            # Printed (not just self._log, which is silent without --verbose) so the exact
+            # rejected quantity/step size is visible in journalctl -- the exchange's error message
+            # alone doesn't say what we actually sent, which is the first thing needed to tell a
+            # genuinely stale filter apart from some other rejection reason entirely.
+            print(
+                f"Order rejected, attempting filter refresh + retry: symbol={symbol} side={side} "
+                f"qty={quantity} step_size={self._symbol_filters.step_size} error={first_exc}"
+            )
             if not self._refresh_symbol_filters():
                 raise
             if recompute_quantity is not None:
                 quantity = recompute_quantity()
-            order = self.order_executor.place_order(
-                symbol, side, quantity, reference_price=reference_price, reduce_only=reduce_only
-            )
+            try:
+                order = self.order_executor.place_order(
+                    symbol, side, quantity, reference_price=reference_price, reduce_only=reduce_only
+                )
+            except Exception as retry_exc:
+                print(
+                    f"Retry after filter refresh also failed: symbol={symbol} side={side} "
+                    f"qty={quantity} step_size={self._symbol_filters.step_size} error={retry_exc}"
+                )
+                raise
             self._log(f"Order placed on retry after refreshing symbol filters (qty={quantity})")
             return order, quantity
 

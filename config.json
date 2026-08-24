@@ -66,8 +66,8 @@
     "min_signal_score": 0.60
   },
   "live": {
-    "timeframe": "5m",
-    "poll_interval_seconds": 300,
+    "timeframe": "1m",
+    "poll_interval_seconds": 60,
     "warmup_candles": 100,
     "stop_loss_pct": 0.01,
     "take_profit_pct": 0.03,
