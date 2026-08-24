@@ -1,7 +1,9 @@
 import hashlib
 import hmac
+from unittest.mock import patch
 
 import pytest
+import requests
 
 from app.binance_client import BinanceLiveClient, BinanceTestnetClient, round_step_size
 
@@ -101,3 +103,41 @@ def test_assert_safe_to_trade_rejects_restricted_account(monkeypatch):
     monkeypatch.setattr(client, "get_account", lambda: {"canTrade": False})
     with pytest.raises(ValueError, match="cannot trade"):
         client.assert_safe_to_trade()
+
+
+class _FakeResponse:
+    def __init__(self, status_code, reason, body):
+        self.status_code = status_code
+        self.reason = reason
+        self._body = body
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code} Client Error", response=self)
+
+    def json(self):
+        return self._body
+
+
+def test_signed_request_error_surfaces_binance_code_and_message():
+    # requests' default HTTPError message is just "400 Client Error: Bad Request for url: ...",
+    # which buries the one thing that actually matters for diagnosing (and, for LiveRunner,
+    # auto-recovering from) a rejected order: Binance's own error code and message.
+    client = BinanceTestnetClient(api_key="key", api_secret="secret")
+    fake_response = _FakeResponse(400, "Bad Request", {"code": -1013, "msg": "Filter failure: LOT_SIZE"})
+    with patch("app.binance_client.requests.request", return_value=fake_response):
+        with pytest.raises(requests.HTTPError) as exc_info:
+            client._signed_request("POST", "/api/v3/order", {"symbol": "BTCUSDT"})
+
+    message = str(exc_info.value)
+    assert "-1013" in message
+    assert "Filter failure: LOT_SIZE" in message
+    assert "signature=" not in message  # must not leak the signed request URL into the error
+
+
+def test_signed_request_falls_back_to_default_message_when_body_has_no_binance_error():
+    client = BinanceTestnetClient(api_key="key", api_secret="secret")
+    fake_response = _FakeResponse(503, "Service Unavailable", {})
+    with patch("app.binance_client.requests.request", return_value=fake_response):
+        with pytest.raises(requests.HTTPError):
+            client._signed_request("GET", "/api/v3/account", {})

@@ -94,7 +94,7 @@ class RecordingOrderExecutor:
 class FailingOrderExecutor:
     """Every order placement raises, simulating a rejected order / network failure."""
 
-    def place_order(self, symbol, side, quantity, reference_price):
+    def place_order(self, symbol, side, quantity, reference_price, reduce_only=False):
         raise RuntimeError("simulated exchange rejection")
 
 
@@ -105,7 +105,7 @@ class PartialFillOrderExecutor:
         self.fill_fraction = fill_fraction
         self._inner = SimulatedOrderExecutor(trade_fee_pct=trade_fee_pct, slippage_pct=slippage_pct)
 
-    def place_order(self, symbol, side, quantity, reference_price):
+    def place_order(self, symbol, side, quantity, reference_price, reduce_only=False):
         order = self._inner.place_order(symbol, side, quantity, reference_price)
         fill = order["fills"][0]
         fill["qty"] = str(float(fill["qty"]) * self.fill_fraction)
@@ -997,5 +997,191 @@ def test_file_kill_switch_stops_the_loop(tmp_path):
 
     kill_file.write_text("stop")
     runner._check_kill_switch_file()
+
+
+class _FakeFilterClient:
+    """Stands in for the `.client` attribute on a real order executor -- exposes
+    get_symbol_filters() so LiveRunner's self-healing refresh path has something to call."""
+
+    def __init__(self, filters=None, should_fail=False):
+        self.filters = filters
+        self.should_fail = should_fail
+        self.calls = 0
+
+    def get_symbol_filters(self, symbol):
+        self.calls += 1
+        if self.should_fail:
+            raise RuntimeError("exchangeInfo unreachable")
+        return self.filters
+
+
+class FlakyOrderExecutor:
+    """Rejects the first `fail_times` orders (simulating a stale-filter exchange rejection),
+    then delegates to a real SimulatedOrderExecutor. Exposes `.client` so a filter refresh
+    can succeed."""
+
+    def __init__(self, fail_times=1, filters_after_refresh=None):
+        self._inner = SimulatedOrderExecutor(trade_fee_pct=0.0, slippage_pct=0.0)
+        self.fail_times = fail_times
+        self.calls = 0
+        self.client = _FakeFilterClient(filters_after_refresh)
+
+    def place_order(self, symbol, side, quantity, reference_price, reduce_only=False):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise RuntimeError("400 Client Error: Binance error -1013 — Filter failure: LOT_SIZE")
+        return self._inner.place_order(symbol, side, quantity, reference_price)
+
+
+class AlwaysFailingOrderExecutorWithClient:
+    """Every order placement raises, but (unlike FailingOrderExecutor) exposes `.client` so
+    a filter refresh is attempted -- used to confirm the retry is capped at exactly one."""
+
+    def __init__(self, filters):
+        self.client = _FakeFilterClient(filters)
+        self.calls = 0
+
+    def place_order(self, symbol, side, quantity, reference_price, reduce_only=False):
+        self.calls += 1
+        raise RuntimeError(f"still rejected (attempt {self.calls})")
+
+
+def test_order_failure_self_heals_via_symbol_filter_refresh_and_retry():
+    closes = [100.0 + i * 0.5 for i in range(60)]
+    new_filters = SymbolFilters(step_size=0.01, tick_size=0.01, min_notional=0.0)
+    executor = FlakyOrderExecutor(fail_times=1, filters_after_refresh=new_filters)
+    notifier = FakeNotifier()
+    runner = _make_runner(_make_candles(closes), order_executor=executor, notifier=notifier)
+
+    runner.run_once()
+
+    assert executor.calls == 2  # failed once, then succeeded on the refresh-and-retry
+    assert executor.client.calls == 1  # filters refreshed exactly once
+    assert runner._symbol_filters is new_filters
+    assert len(runner.store.list_open_trades()) == 1
+    assert not any("Order failed" in m for m in notifier.sent)  # self-healed, no failure alert
+
+
+def test_order_failure_with_no_refresh_path_notifies_and_releases_capital():
+    closes = [100.0 + i * 0.5 for i in range(60)]
+    notifier = FakeNotifier()
+    runner = _make_runner(_make_candles(closes), order_executor=FailingOrderExecutor(), notifier=notifier)
+
+    daily_trades_before = runner.risk_manager.daily_trades
+    runner.run_once()
+
+    assert runner.store.list_open_trades() == []
+    assert runner.risk_manager.daily_trades == daily_trades_before
+    assert any("Order failed" in m and "BTC/USDT" in m for m in notifier.sent)
+
+
+def test_order_failure_persisting_after_refresh_retries_exactly_once_and_notifies():
+    closes = [100.0 + i * 0.5 for i in range(60)]
+    filters = SymbolFilters(step_size=0.001, tick_size=0.01, min_notional=0.0)
+    executor = AlwaysFailingOrderExecutorWithClient(filters)
+    notifier = FakeNotifier()
+    runner = _make_runner(_make_candles(closes), order_executor=executor, notifier=notifier)
+
+    runner.run_once()
+
+    assert executor.calls == 2  # original attempt + exactly one retry, never more
+    assert executor.client.calls == 1
+    assert runner.store.list_open_trades() == []
+    assert any("attempt 2" in m for m in notifier.sent)
+
+
+def test_failed_close_order_notifies_after_exhausting_retry():
+    uptrend = [100.0 + i * 0.5 for i in range(60)]
+    data_feed = FakeDataFeed(_make_candles(uptrend + [uptrend[-1]]))
+    notifier = FakeNotifier()
+    runner = _make_runner(candles=[], data_feed=data_feed, notifier=notifier)
+    runner.run_once()
+    assert runner.risk_manager.open_positions == 1
+
+    notifier.sent.clear()
+    runner.order_executor = FailingOrderExecutor()
+    data_feed.candles = _make_candles(uptrend + [50.0, 50.0])  # would trigger stop-loss close
+    runner.run_once()
+
+    assert runner.risk_manager.open_positions == 1  # unchanged, ready to retry next poll
+    assert any("Close order failed" in m for m in notifier.sent)
+
+
+class _RaisingFundingFuturesClient(FakeFuturesClient):
+    def get_funding_payments(self, symbol, start_time_ms):
+        raise RuntimeError("income endpoint unreachable")
+
+
+def test_funding_payment_fetch_failure_notifies():
+    notifier = FakeNotifier()
+    futures_client = _RaisingFundingFuturesClient()
+    runner = _make_runner(
+        _make_candles([100.0] * 5), futures_client=futures_client, market_type="futures", notifier=notifier
+    )
+
+    runner._check_funding_payments()
+
+    assert any("Failed to fetch funding payments" in m for m in notifier.sent)
+
+
+class _CancelFailingFuturesClient(FakeFuturesClient):
+    def cancel_all_open_orders(self, symbol):
+        raise RuntimeError("cancel endpoint unreachable")
+
+
+def test_emergency_close_notifies_when_cancel_all_orders_fails():
+    notifier = FakeNotifier()
+    futures_client = _CancelFailingFuturesClient()
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=futures_client,
+        market_type="futures",
+        notifier=notifier,
+        risk_config=RiskConfig(capital=100, leverage=2.0),
+    )
+
+    runner._emergency_close_all("test_reason")
+
+    assert any("Failed to cancel open orders" in m for m in notifier.sent)
+    assert any("EMERGENCY CLOSE" in m for m in notifier.sent)
+
+
+def test_run_forever_notifies_when_poll_commands_fails():
+    runner_holder = {}
+
+    class RaisingNotifier(FakeNotifier):
+        def get_updates(self, offset=None, timeout=0):
+            runner_holder["runner"]._stop_requested = True
+            raise RuntimeError("simulated telegram outage")
+
+    notifier = RaisingNotifier()
+    runner = _make_runner(_make_candles([100.0] * 5), notifier=notifier, command_poll_interval_seconds=0)
+    runner_holder["runner"] = runner
+
+    runner.run_forever()
+
+    assert any("Error polling Telegram commands" in m for m in notifier.sent)
+
+
+def test_run_forever_notifies_when_run_once_fails():
+    runner_holder = {}
+
+    class RaisingDataFeed:
+        def get_recent_candles(self, symbol, interval="5m", limit=100):
+            runner_holder["runner"]._stop_requested = True
+            raise RuntimeError("simulated market-data outage")
+
+        def get_latest_price(self, symbol):
+            return None
+
+    notifier = FakeNotifier()
+    runner = _make_runner(
+        [], data_feed=RaisingDataFeed(), notifier=notifier, command_poll_interval_seconds=0
+    )
+    runner_holder["runner"] = runner
+
+    runner.run_forever()
+
+    assert any("Error in trading loop" in m for m in notifier.sent)
 
     assert runner._stop_requested is True

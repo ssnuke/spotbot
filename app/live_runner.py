@@ -149,6 +149,54 @@ class LiveRunner:
         self.risk_manager.daily_trades = max(0, self.risk_manager.daily_trades - 1)
         self._save_risk_state()
 
+    def _refresh_symbol_filters(self) -> bool:
+        """Re-fetches exchange lot-size/tick-size/min-notional filters for self.symbol. Exchange
+        filters can change server-side (e.g. Binance re-tiering a pair's LOT_SIZE precision)
+        without this process restarting, and a stale filter causes every order to be rejected
+        until the filters are refreshed -- this lets that self-heal instead of requiring a
+        manual restart. Returns whether the refresh succeeded."""
+        client = getattr(self.order_executor, "client", None) or self.futures_client
+        if client is None:
+            return False
+        try:
+            self._symbol_filters = client.get_symbol_filters(self.symbol)
+            self._log(f"Refreshed symbol filters for {self.symbol}: {self._symbol_filters}")
+            return True
+        except Exception as exc:
+            self._log(f"Failed to refresh symbol filters: {exc}")
+            return False
+
+    def _place_order_with_filter_refresh(
+        self,
+        symbol: str,
+        side: str,
+        quantity: float,
+        reference_price: float,
+        reduce_only: bool = False,
+        recompute_quantity: Optional[Callable[[], float]] = None,
+    ) -> tuple[dict, float]:
+        """Places an order; if it's rejected, refreshes symbol filters and retries exactly once.
+        `recompute_quantity`, when given, re-derives the quantity from `self._symbol_filters`
+        after the refresh (e.g. re-rounding to a step size that just changed) -- otherwise the
+        same quantity is resubmitted as-is. Returns (order, quantity actually submitted) on
+        success; re-raises the retry's exception (or the original, if no refresh was possible)
+        on failure."""
+        try:
+            order = self.order_executor.place_order(
+                symbol, side, quantity, reference_price=reference_price, reduce_only=reduce_only
+            )
+            return order, quantity
+        except Exception:
+            if not self._refresh_symbol_filters():
+                raise
+            if recompute_quantity is not None:
+                quantity = recompute_quantity()
+            order = self.order_executor.place_order(
+                symbol, side, quantity, reference_price=reference_price, reduce_only=reduce_only
+            )
+            self._log(f"Order placed on retry after refreshing symbol filters (qty={quantity})")
+            return order, quantity
+
     def _render_table(self, headers: list[str], rows: list[list[str]]) -> str:
         """Renders a compact, right-aligned monospace table for Telegram, wrapped in a
         Markdown code block so column alignment survives Telegram's non-monospace default
@@ -272,6 +320,10 @@ class LiveRunner:
                 self.futures_client.cancel_all_open_orders(self.symbol)
             except Exception as exc:
                 self._log(f"cancel_all_open_orders failed during emergency close: {exc}")
+                self.notifier.send(
+                    f"⚠️ Failed to cancel open orders during emergency close (positions are still "
+                    f"being closed below) — check for resting orders manually:\n{exc}"
+                )
         for trade in self.store.list_open_trades():
             current_price = self._get_current_price(trade.entry_execution_price)
             self._close_trade(trade, current_price, reason)
@@ -356,6 +408,7 @@ class LiveRunner:
             payments = self.futures_client.get_funding_payments(self.symbol, self._funding_last_checked_ms)
         except Exception as exc:
             self._log(f"Failed to fetch funding payments: {exc}")
+            self.notifier.send(f"⚠️ Failed to fetch funding payments (will retry next poll):\n{exc}")
             return
         self._funding_last_checked_ms = int(time.time() * 1000)
         if not payments:
@@ -410,7 +463,13 @@ class LiveRunner:
 
         order_side = "BUY" if signal.side == "buy" else "SELL"
         try:
-            order = self.order_executor.place_order(self.symbol, order_side, quantity, reference_price=entry_price)
+            order, quantity = self._place_order_with_filter_refresh(
+                self.symbol,
+                order_side,
+                quantity,
+                reference_price=entry_price,
+                recompute_quantity=lambda: round_step_size(plan.position_size, self._symbol_filters.step_size),
+            )
         except Exception as exc:
             # create_trade_plan() above already reserved capital and a daily-trade slot for
             # this order -- if it never actually got placed, that reservation must be released,
@@ -418,6 +477,10 @@ class LiveRunner:
             print(f"Order placement failed, releasing reserved capital: {exc}")
             self._log(f"Order placement failed, releasing reserved capital: {exc}")
             self._release_reserved_trade_slot(plan)
+            self.notifier.send(
+                f"\U0001F6D1 Order failed: {signal.side.upper()} {self.symbol} — trade skipped, "
+                f"reserved capital released.\n{exc}"
+            )
             return
 
         fill_price, filled_quantity, entry_fee = _extract_fill(order, fallback_price=entry_price, fallback_quantity=quantity)
@@ -477,14 +540,22 @@ class LiveRunner:
 
         close_side = "SELL" if trade.side == "buy" else "BUY"
         try:
-            order = self.order_executor.place_order(
-                self.symbol, close_side, partial_qty, reference_price=current_price, reduce_only=True
+            order, partial_qty = self._place_order_with_filter_refresh(
+                self.symbol,
+                close_side,
+                partial_qty,
+                reference_price=current_price,
+                reduce_only=True,
+                recompute_quantity=lambda: round_step_size(
+                    trade.quantity * self.partial_exit_qty_pct, self._symbol_filters.step_size
+                ),
             )
         except Exception as exc:
             # Nothing has been mutated yet -- the trade stays open unchanged and this partial
             # exit will simply be retried on the next poll if the price condition still holds.
             print(f"Partial exit order failed, will retry next poll: {exc}")
             self._log(f"Partial exit order failed, will retry next poll: {exc}")
+            self.notifier.send(f"⚠️ Partial exit failed for {trade.symbol}, will retry next poll:\n{exc}")
             return
 
         partial_price, filled_qty, partial_fee = _extract_fill(order, fallback_price=current_price, fallback_quantity=partial_qty)
@@ -538,14 +609,24 @@ class LiveRunner:
     def _close_trade(self, trade: OpenTradeState, current_price: float, exit_reason: str) -> None:
         close_side = "SELL" if trade.side == "buy" else "BUY"
         try:
-            order = self.order_executor.place_order(
-                self.symbol, close_side, trade.remaining_quantity, reference_price=current_price, reduce_only=True
+            order, _ = self._place_order_with_filter_refresh(
+                self.symbol,
+                close_side,
+                trade.remaining_quantity,
+                reference_price=current_price,
+                reduce_only=True,
+                recompute_quantity=lambda: round_step_size(
+                    trade.remaining_quantity, self._symbol_filters.step_size
+                ),
             )
         except Exception as exc:
             # Nothing has been mutated yet -- the trade stays open and the close is retried
             # on the next poll (the stop/target condition that triggered this is still true).
             print(f"Close order failed, will retry next poll: {exc}")
             self._log(f"Close order failed, will retry next poll: {exc}")
+            self.notifier.send(
+                f"⚠️ Close order failed for {trade.symbol} ({exit_reason}), will retry next poll:\n{exc}"
+            )
             return
 
         # filled_qty should equal trade.remaining_quantity for a market order on a liquid pair
@@ -877,9 +958,13 @@ class LiveRunner:
                 self._poll_commands()
             except Exception as exc:
                 # Always printed (not just via self._log, which is silent without --verbose) so
-                # errors are never invisible in journalctl once real money is involved.
+                # errors are never invisible in journalctl once real money is involved. Also
+                # notified -- if this exception IS Telegram being unreachable, notifier.send()
+                # itself just swallows the failure and returns False rather than raising, so this
+                # never masks the original error or loops back into itself.
                 print(f"Error polling Telegram commands: {exc}")
                 self._log(f"Error polling Telegram commands: {exc}")
+                self.notifier.send(f"\U0001F6D1 Error polling Telegram commands:\n{exc}")
 
             now = time.time()
             if now - last_run_at >= self.poll_interval_seconds:
@@ -889,6 +974,7 @@ class LiveRunner:
                 except Exception as exc:  # keep the loop alive across transient API errors
                     print(f"Error in run_once: {exc}")
                     self._log(f"Error in run_once: {exc}")
+                    self.notifier.send(f"\U0001F6D1 Error in trading loop (will retry next poll):\n{exc}")
                 self.risk_manager.tick()
 
             now = time.time()

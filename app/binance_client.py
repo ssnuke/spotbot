@@ -34,6 +34,17 @@ def _exponent(value: float) -> int:
     return -len(text.split(".")[1])
 
 
+def _describe_binance_error(response: requests.Response, exc: requests.HTTPError) -> str:
+    try:
+        body = response.json()
+        code, msg = body.get("code"), body.get("msg")
+        if code is not None or msg is not None:
+            return f"{response.status_code} {response.reason}: Binance error {code} — {msg}"
+    except ValueError:
+        pass
+    return str(exc)
+
+
 class BinanceSpotClient:
     """Signed REST client for Binance's Spot API surface. Binance Spot Testnet mirrors
     the production API exactly, so this same client works against either -- only the
@@ -59,7 +70,14 @@ class BinanceSpotClient:
         response = requests.request(
             method, url, headers=headers, params={**params, "signature": signature}, timeout=10
         )
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            # requests' default message is just "400 Client Error: Bad Request for url: ...",
+            # which buries the one thing that actually matters (Binance's own error code/message,
+            # e.g. "Filter failure: LOT_SIZE") and leaks the signed URL (incl. signature) into
+            # whatever logs/alerts this exception's string ends up in.
+            raise requests.HTTPError(_describe_binance_error(response, exc), response=response) from exc
         return response.json()
 
     def get_symbol_filters(self, symbol: str) -> SymbolFilters:
