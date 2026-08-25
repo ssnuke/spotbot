@@ -350,6 +350,12 @@ def test_closed_trade_message_renders_a_table_with_entry_exit_fees_pnl_capital()
     assert "50.00" in message  # Exit price (no slippage configured in this test)
     assert "Fees" in message and "PnL" in message
     assert "Capital:" in message
+    # Regression: exit_reason ("trailing_stop") is dynamic text inside a parse_mode="Markdown"
+    # message. A bare "_" is an italics delimiter to Telegram's legacy Markdown -- an odd count
+    # (exactly what every underscored exit reason has) gets the WHOLE message rejected by
+    # Telegram's API, with nothing in this codebase surfacing that failure. Must be escaped.
+    assert "trailing\\_stop" in message
+    assert "trailing_stop)" not in message  # the unescaped form must not appear anywhere
 
     history = runner.store.list_recent_trade_history(limit=1)
     assert history[0].fees > 0  # this segment's own exit fee was tracked, not left at the 0.0 default

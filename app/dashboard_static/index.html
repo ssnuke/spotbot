@@ -90,6 +90,19 @@
   .eq-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
   .eq-dot { fill: var(--accent); }
 
+  .market-last-price { font-family: "IBM Plex Mono", monospace; font-size: 0.85rem; font-weight: 500; color: var(--ink-secondary); margin-left: 6px; }
+  .candle-wick { stroke-width: 1; }
+  .candle-up { fill: var(--good); stroke: var(--good); }
+  .candle-down { fill: var(--bad); stroke: var(--bad); }
+  .position-line { stroke-width: 1.25; stroke-dasharray: 4 3; }
+  .position-line.entry { stroke: var(--accent); }
+  .position-line.stop { stroke: var(--bad); }
+  .position-line.target { stroke: var(--good); }
+  .position-label { font-family: "IBM Plex Mono", monospace; font-size: 9.5px; }
+  .position-label.entry { fill: var(--accent); }
+  .position-label.stop { fill: var(--bad); }
+  .position-label.target { fill: var(--good); }
+
   .position-card { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; background: var(--surface); box-shadow: var(--shadow); margin-bottom: 10px; }
   .position-card + .position-card { margin-top: 10px; }
   .position-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
@@ -125,6 +138,13 @@
   </header>
 
   <div class="stat-grid" id="stat-grid"></div>
+
+  <section>
+    <h2>Live market <span id="market-last-price" class="market-last-price"></span></h2>
+    <div class="card">
+      <div id="market-chart"></div>
+    </div>
+  </section>
 
   <section>
     <h2>Equity curve</h2>
@@ -253,6 +273,75 @@ function renderEquityCurve(points) {
     </svg>`;
 }
 
+function renderMarketChart(data, positions) {
+  const container = document.getElementById("market-chart");
+  const priceLabel = document.getElementById("market-last-price");
+  const candlesData = data && data.candles ? data.candles : [];
+  if (candlesData.length < 2) {
+    container.innerHTML = '<div class="empty-state">Market data unavailable right now.</div>';
+    priceLabel.textContent = "";
+    return;
+  }
+
+  const lastClose = candlesData[candlesData.length - 1].close;
+  priceLabel.textContent = data.symbol + "  " + lastClose.toFixed(4) + "  ·  " + data.interval;
+
+  const W = 820, H = 280, padL = 58, padR = 12, padT = 14, padB = 24;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+
+  const overlayLevels = [];
+  positions.forEach(p => {
+    overlayLevels.push(p.entry_execution_price ?? p.entry_price);
+    overlayLevels.push(p.trailing_stop ?? p.stop_loss);
+    overlayLevels.push(p.take_profit);
+  });
+
+  const allHighs = candlesData.map(c => c.high).concat(overlayLevels);
+  const allLows = candlesData.map(c => c.low).concat(overlayLevels);
+  const hi = Math.max(...allHighs), lo = Math.min(...allLows);
+  const span = (hi - lo) || 1;
+  const padSpan = span * 0.08;
+  const yMax = hi + padSpan, yMin = lo - padSpan;
+
+  const n = candlesData.length;
+  const slot = plotW / n;
+  const bodyW = Math.max(1.5, slot * 0.6);
+  const x = i => padL + slot * (i + 0.5);
+  const y = v => padT + plotH - ((v - yMin) / (yMax - yMin)) * plotH;
+
+  let svg = "";
+  for (let i = 0; i <= 3; i++) {
+    const v = yMin + ((yMax - yMin) * i / 3);
+    const gy = y(v);
+    svg += `<line x1="${padL}" y1="${gy.toFixed(1)}" x2="${W - padR}" y2="${gy.toFixed(1)}" class="gridline" />`;
+    svg += `<text x="${padL - 8}" y="${(gy + 4).toFixed(1)}" class="axislabel" text-anchor="end">${v.toFixed(2)}</text>`;
+  }
+
+  candlesData.forEach((c, i) => {
+    const cx = x(i);
+    const up = c.close >= c.open;
+    const cls = up ? "candle-up" : "candle-down";
+    const bodyTop = y(Math.max(c.open, c.close));
+    const bodyBottom = y(Math.min(c.open, c.close));
+    const bodyH = Math.max(1, bodyBottom - bodyTop);
+    svg += `<line x1="${cx.toFixed(1)}" y1="${y(c.high).toFixed(1)}" x2="${cx.toFixed(1)}" y2="${y(c.low).toFixed(1)}" class="candle-wick ${cls}" />`;
+    svg += `<rect x="${(cx - bodyW / 2).toFixed(1)}" y="${bodyTop.toFixed(1)}" width="${bodyW.toFixed(1)}" height="${bodyH.toFixed(1)}" class="${cls}" />`;
+  });
+
+  const levelLine = (value, cls, label) => {
+    const gy = y(value);
+    return `<line x1="${padL}" y1="${gy.toFixed(1)}" x2="${W - padR}" y2="${gy.toFixed(1)}" class="position-line ${cls}" />` +
+      `<text x="${W - padR - 4}" y="${(gy - 4).toFixed(1)}" class="position-label ${cls}" text-anchor="end">${label} ${value.toFixed(4)}</text>`;
+  };
+  positions.forEach(p => {
+    svg += levelLine(p.entry_execution_price ?? p.entry_price, "entry", "Entry");
+    svg += levelLine(p.trailing_stop ?? p.stop_loss, "stop", "Stop");
+    svg += levelLine(p.take_profit, "target", "Target");
+  });
+
+  container.innerHTML = `<svg viewBox="0 0 ${W} ${H}" class="chart-svg" role="img" aria-label="Live market candles">${svg}</svg>`;
+}
+
 function renderPositions(positions) {
   const list = document.getElementById("positions-list");
   if (!positions.length) {
@@ -302,13 +391,15 @@ function renderTrades(data) {
 }
 
 async function refresh() {
+  let positions = [];
   try {
-    const [summary, curve, positions, trades] = await Promise.all([
+    const [summary, curve, positionsResult, trades] = await Promise.all([
       fetchJSON("/api/summary"),
       fetchJSON("/api/equity-curve"),
       fetchJSON("/api/positions"),
       fetchJSON(`/api/trades?page=${currentPage}&page_size=20`),
     ]);
+    positions = positionsResult;
     renderSummary(summary);
     renderEquityCurve(curve);
     renderPositions(positions);
@@ -320,6 +411,17 @@ async function refresh() {
     document.getElementById("status-pill").classList.add("stale");
     document.getElementById("status-pill").textContent = "connection lost";
     document.getElementById("last-updated").textContent = "Last update failed: " + err.message;
+  }
+
+  // Fetched and rendered independently of the core dashboard data above -- a Binance API
+  // hiccup fetching market candles shouldn't mark the whole dashboard "connection lost" when
+  // the bot's own state is loading fine.
+  try {
+    const candleData = await fetchJSON("/api/candles");
+    renderMarketChart(candleData, positions);
+  } catch (err) {
+    document.getElementById("market-chart").innerHTML =
+      '<div class="empty-state">Market data unavailable: ' + err.message + '</div>';
   }
 }
 

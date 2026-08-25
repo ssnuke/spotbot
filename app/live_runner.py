@@ -743,7 +743,12 @@ class LiveRunner:
             ],
         )
         self.notifier.send(
-            f"✅ Closed {trade.side.upper()} {trade.symbol} ({exit_reason})\n"
+            # exit_reason (e.g. "trailing_stop", "signal_reversal") is dynamic text inside a
+            # Markdown-parsed message -- Telegram's legacy Markdown treats a lone "_" as an
+            # italics delimiter, and an odd count (as in every underscored reason string here)
+            # makes the ENTIRE message get rejected by Telegram's API with no visible error
+            # anywhere in this codebase. Escaped so it renders as a literal underscore instead.
+            f"✅ Closed {trade.side.upper()} {trade.symbol} ({exit_reason.replace('_', chr(92) + '_')})\n"
             f"{table}\n"
             f"Capital: {self._fmt_usdt(self.risk_manager._reference_capital())}\n"
             f"Running PnL: {self._fmt_usdt(self.cumulative_pnl, signed=True)} over {self.closed_trades} trades "
@@ -842,6 +847,8 @@ class LiveRunner:
         "take_profit": "TP",
         "trailing_stop": "TS",
         "partial_profit": "PE",
+        "signal_reversal": "SR",
+        "liquidation": "LQ",
     }
 
     def _recent_trades_message(self, limit: int = 5) -> str:
@@ -857,7 +864,11 @@ class LiveRunner:
                 f"{record.exit_price:.2f}",
                 f"{record.fees:.3f}",
                 f"{record.pnl:+.2f}",
-                self._EXIT_REASON_ABBREVIATIONS.get(record.exit_reason, record.exit_reason),
+                # Falls back to the raw reason for anything not in the map above (e.g. the
+                # dynamic emergency-close reasons) -- escaped since this whole message is sent
+                # with parse_mode="Markdown" and an unescaped "_" can get the message rejected.
+                self._EXIT_REASON_ABBREVIATIONS.get(record.exit_reason)
+                or record.exit_reason.replace("_", "\\_"),
             ]
             for record in records
         ]

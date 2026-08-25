@@ -20,6 +20,7 @@ load_dotenv()
 
 DB_PATH = os.getenv("DASHBOARD_DB_PATH", "live_state.db")
 SYMBOL = os.getenv("DASHBOARD_SYMBOL", "SOL/USDT")
+CHART_INTERVAL = os.getenv("DASHBOARD_CHART_INTERVAL", "5m")
 DASHBOARD_USERNAME = os.getenv("DASHBOARD_USERNAME")
 DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD")
 STATIC_DIR = Path(__file__).parent / "dashboard_static"
@@ -120,6 +121,34 @@ def _fetch_mark_price(symbol: str) -> float | None:
         return float(resp.json()["price"])
     except Exception:
         return None
+
+
+@app.route("/api/candles")
+@require_auth
+def candles():
+    """Recent OHLC candles for the live market chart -- Binance's public futures klines
+    endpoint, no API key needed. Same read-only-to-the-outside-world posture as the mark-price
+    fetch below: this process never places orders or touches account data, only market data."""
+    limit = min(500, max(20, request.args.get("limit", 150, type=int)))
+    try:
+        resp = requests.get(
+            "https://fapi.binance.com/fapi/v1/klines",
+            params={"symbol": SYMBOL.replace("/", ""), "interval": CHART_INTERVAL, "limit": limit},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        raw = resp.json()
+    except Exception as exc:
+        return jsonify({"error": f"Failed to fetch candles: {exc}"}), 502
+
+    return jsonify({
+        "symbol": SYMBOL,
+        "interval": CHART_INTERVAL,
+        "candles": [
+            {"time": c[0], "open": float(c[1]), "high": float(c[2]), "low": float(c[3]), "close": float(c[4])}
+            for c in raw
+        ],
+    })
 
 
 @app.route("/api/positions")
