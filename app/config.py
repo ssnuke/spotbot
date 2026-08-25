@@ -22,6 +22,7 @@ class RiskConfigData:
     max_consecutive_losses: int = 0
     cooldown_period: int = 0
     min_entry_spacing_ticks: int = 0
+    drawdown_recovery_period: int = 0
     compounding_enabled: bool = False
     leverage: float = 1.0
     max_leverage: float = 5.0
@@ -46,6 +47,7 @@ class BacktestConfigData:
     max_consecutive_losses: int = 0
     cooldown_period: int = 0
     min_entry_spacing_ticks: int = 0
+    drawdown_recovery_period: int = 0
     compounding_enabled: bool = False
     reward_ratio: float = 2.0
     stop_loss_pct: float = 0.01

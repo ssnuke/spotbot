@@ -82,6 +82,7 @@ class BacktestConfig:
     max_consecutive_losses: int = 0
     cooldown_period: int = 0
     min_entry_spacing_ticks: int = 0
+    drawdown_recovery_period: int = 0
     compounding_enabled: bool = False
     reward_ratio: float = 2.0
     stop_loss_pct: float = 0.01
@@ -133,6 +134,7 @@ class Backtester:
                 max_consecutive_losses=self.config.max_consecutive_losses,
                 cooldown_period=self.config.cooldown_period,
                 min_entry_spacing_ticks=self.config.min_entry_spacing_ticks,
+                drawdown_recovery_period=self.config.drawdown_recovery_period,
                 compounding_enabled=self.config.compounding_enabled,
                 leverage=self.config.leverage,
                 max_leverage=self.config.max_leverage,
@@ -223,11 +225,13 @@ class Backtester:
             if stop_loss_price <= 0:
                 continue
             if result.max_drawdown_halt_date is None and self.risk_manager._max_drawdown_exceeded():
-                # This is a permanent halt, not a transient rejection: once tripped, equity
-                # and peak_equity never move again without a new trade, so nothing here can
-                # recover on its own for the rest of the run. Record it once, visibly --
-                # silently truncating the effective backtest period is the failure mode this
-                # guards against.
+                # Records the FIRST breach only. With the default drawdown_recovery_period=0 this
+                # is effectively permanent -- equity and peak_equity never move again without a
+                # new trade, so nothing here can recover on its own for the rest of the run. With
+                # a nonzero recovery period configured, trading can resume later (the reference
+                # peak resets), but this field still marks when the breach first happened.
+                # Record it once, visibly -- silently truncating the effective backtest period
+                # is the failure mode this guards against.
                 result.max_drawdown_halt_date = self._get_candle_date(candles[index]).isoformat()
                 print(
                     f"\n*** Max drawdown ({self.risk_manager.config.max_drawdown_pct * 100:.1f}%) breached on "

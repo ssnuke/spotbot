@@ -135,6 +135,7 @@ class LiveRunner:
         self._update_offset: Optional[int] = None
         self._stop_requested = False
         self._trading_paused = False
+        self._drawdown_halt_notified = False
 
     def _log(self, message: str) -> None:
         self.telemetry.log(message)
@@ -461,6 +462,39 @@ class LiveRunner:
         last_open_time = int(closed[-1][0])
         return prices, last_open_time
 
+    def _current_drawdown_pct(self) -> float:
+        peak = self.risk_manager.peak_equity
+        if peak <= 0:
+            return 0.0
+        return max(0.0, (peak - self.risk_manager.equity) / peak)
+
+    def _check_drawdown_halt_notification(self) -> None:
+        """Sends exactly one Telegram alert per halt episode the first time the max-drawdown
+        circuit breaker starts blocking trades -- without this, a halted account looks
+        identical to a quiet market: validate_trade() just returns False silently, and the
+        matching log line only shows with --verbose."""
+        halted = self.risk_manager.is_drawdown_halted()
+        if halted and not self._drawdown_halt_notified:
+            self._drawdown_halt_notified = True
+            drawdown = self._current_drawdown_pct()
+            recovery = self.risk_manager.config.drawdown_recovery_period
+            recovery_note = (
+                f"Will auto-resume in {self.risk_manager.drawdown_halt_remaining} ticks "
+                f"(peak resets, drawdown recalculated fresh)."
+                if recovery > 0
+                else "No auto-recovery configured -- this will persist until equity recovers "
+                "or the config changes."
+            )
+            self._log(f"Max drawdown circuit breaker tripped at {drawdown:.1%}")
+            self.notifier.send(
+                f"\U0001F9CA Max drawdown circuit breaker tripped ({drawdown:.1%} from peak "
+                f"{self._fmt_usdt(self.risk_manager.peak_equity)}) -- new trades blocked.\n{recovery_note}"
+            )
+        elif not halted and self._drawdown_halt_notified:
+            self._drawdown_halt_notified = False
+            self._log("Max drawdown circuit breaker cleared, trading resumed")
+            self.notifier.send("✅ Max drawdown circuit breaker cleared -- trading resumed.")
+
     def _open_position(self, signal, entry_price: float) -> None:
         stop_loss_price = (
             entry_price * (1 - self.stop_loss_pct) if signal.side == "buy" else entry_price * (1 + self.stop_loss_pct)
@@ -773,7 +807,9 @@ class LiveRunner:
             f"Capital: {self._fmt_usdt(self.risk_manager._reference_capital())}"
             f"{' (compounding ON)' if self.risk_manager.config.compounding_enabled else ''}\n"
             f"Daily trades used: {self.risk_manager.daily_trades}/{self.risk_manager.config.max_trades_per_day}\n"
-            f"Cooldown remaining: {self.risk_manager.cooldown_remaining} ticks"
+            f"Cooldown remaining: {self.risk_manager.cooldown_remaining} ticks\n"
+            f"Drawdown from peak: {self._current_drawdown_pct():.1%} of {self.risk_manager.config.max_drawdown_pct:.0%} limit"
+            f"{' 🧊 HALTED' if self.risk_manager.is_drawdown_halted() else ''}"
             f"{self._futures_status_lines()}"
         )
 
@@ -922,6 +958,7 @@ class LiveRunner:
         exit_price = self._get_current_price(current_price)
         self._check_open_trades(exit_price)
         self._check_futures_safety()
+        self._check_drawdown_halt_notification()
         if self._trading_paused:
             # _check_futures_safety may have just triggered an emergency close and paused
             # trading -- don't fall through into signal evaluation in the same poll.

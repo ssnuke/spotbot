@@ -33,6 +33,58 @@ def test_trade_allowed_when_drawdown_under_limit():
     assert manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)
 
 
+def test_drawdown_halt_is_permanent_by_default():
+    # drawdown_recovery_period=0 (the default) preserves the old behavior: once tripped, equity
+    # never changes again (no trades open), so nothing here can recover without a config change.
+    manager = RiskManager(RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_drawdown_pct=0.05))
+    manager.peak_equity = 50000.0
+    manager.equity = 47000.0
+    assert not manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)
+    assert manager.is_drawdown_halted()
+    for _ in range(10_000):
+        manager.tick()
+    assert manager.is_drawdown_halted()  # still halted -- no recovery period configured
+
+
+def test_drawdown_halt_recovers_after_configured_period():
+    manager = RiskManager(
+        RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_drawdown_pct=0.05, drawdown_recovery_period=10)
+    )
+    manager.peak_equity = 50000.0
+    manager.equity = 47000.0  # 6% drawdown, over the 5% limit
+
+    assert not manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)  # starts the countdown
+    assert manager.is_drawdown_halted()
+    assert manager.drawdown_halt_remaining == 10
+
+    for _ in range(9):
+        manager.tick()
+    assert manager.is_drawdown_halted()  # one tick still remaining
+    assert manager.equity == 47000.0  # equity itself never moved -- only the reference peak will
+
+    manager.tick()  # the 10th tick -- countdown reaches zero
+    assert manager.drawdown_halt_remaining == 0
+    assert manager.peak_equity == 47000.0  # reset to current equity, drawdown-from-peak is now 0%
+    assert not manager.is_drawdown_halted()
+    assert manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)
+
+
+def test_drawdown_halt_countdown_does_not_restart_while_already_counting_down():
+    manager = RiskManager(
+        RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_drawdown_pct=0.05, drawdown_recovery_period=10)
+    )
+    manager.peak_equity = 50000.0
+    manager.equity = 47000.0
+
+    manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)
+    manager.tick()
+    manager.tick()
+    assert manager.drawdown_halt_remaining == 8
+
+    manager.validate_trade(entry_price=100.0, stop_loss_price=95.0)  # a second blocked attempt
+    assert manager.drawdown_halt_remaining == 8  # must not reset the countdown back to 10
+
+
 def test_peak_equity_tracks_new_highs_and_drawdown_is_measured_from_peak():
     manager = RiskManager(RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_drawdown_pct=0.05))
     manager.register_trade_result(pnl=10000.0, notional=0.0)  # equity now 60000, new peak

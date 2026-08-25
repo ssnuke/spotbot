@@ -17,6 +17,10 @@ class RiskConfig:
     max_consecutive_losses: int = 0
     cooldown_period: int = 0
     min_entry_spacing_ticks: int = 0
+    drawdown_recovery_period: int = 0  # ticks after a max-drawdown breach before the reference
+    # peak resets to current equity and trading resumes. 0 = old behavior: permanent halt, since
+    # peak_equity only ever increases and a blocked account can never trade its way back under
+    # the threshold on its own.
     compounding_enabled: bool = False
     # Futures-only fields. leverage=1.0 makes margin_required == notional, identical to today's
     # spot math -- these are inert for spot use and only take effect when leverage > 1.
@@ -63,6 +67,7 @@ class RiskManager:
         self.ticks_since_sell_entry = 10**9
         self.equity = config.capital
         self.peak_equity = config.capital
+        self.drawdown_halt_remaining = 0
 
     def validate_trade(
         self,
@@ -152,6 +157,16 @@ class RiskManager:
             self.cooldown_remaining -= 1
         self.ticks_since_buy_entry = min(self.ticks_since_buy_entry + 1, 10**9)
         self.ticks_since_sell_entry = min(self.ticks_since_sell_entry + 1, 10**9)
+        if self.drawdown_halt_remaining > 0:
+            self.drawdown_halt_remaining -= 1
+            if self.drawdown_halt_remaining == 0:
+                # Fresh reference point -- drawdown-from-peak is 0% again, so trading resumes.
+                # Equity itself is untouched; only the peak used to measure future drawdowns moves.
+                self.peak_equity = self.equity
+
+    def is_drawdown_halted(self) -> bool:
+        """Whether the max-drawdown circuit breaker is currently blocking new trades."""
+        return self._max_drawdown_exceeded()
 
     def create_trade_plan(self, entry_price: float, stop_loss_price: float, side: str = "buy") -> TradePlan:
         if not self.validate_trade(entry_price, stop_loss_price, side=side):
@@ -253,4 +268,10 @@ class RiskManager:
         if self.peak_equity <= 0:
             return False
         drawdown = (self.peak_equity - self.equity) / self.peak_equity
-        return drawdown >= self.config.max_drawdown_pct
+        exceeded = drawdown >= self.config.max_drawdown_pct
+        # Starting the recovery countdown here (not just from validate_trade()) means it begins
+        # the moment anyone observes the breach -- including a per-poll status check with no
+        # signal pending -- rather than only when a trade attempt happens to occur.
+        if exceeded and self.config.drawdown_recovery_period > 0 and self.drawdown_halt_remaining == 0:
+            self.drawdown_halt_remaining = self.config.drawdown_recovery_period
+        return exceeded

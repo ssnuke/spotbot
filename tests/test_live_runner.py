@@ -332,6 +332,9 @@ def test_closed_trade_message_renders_a_table_with_entry_exit_fees_pnl_capital()
     runner = _make_runner(
         candles=[], data_feed=data_feed, notifier=notifier,
         order_executor=SimulatedOrderExecutor(trade_fee_pct=0.001, slippage_pct=0.0),
+        # The severe crash below is for exercising the close/table-render path, not for testing
+        # drawdown behavior -- neutralized so it doesn't also trip the (unrelated) circuit breaker.
+        risk_config=RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_open_positions=3, max_drawdown_pct=0.99),
     )
     runner.run_once()
     open_trade = runner.store.list_open_trades()[0]
@@ -1161,6 +1164,61 @@ def test_run_forever_notifies_when_poll_commands_fails():
     runner.run_forever()
 
     assert any("Error polling Telegram commands" in m for m in notifier.sent)
+
+
+def test_drawdown_halt_sends_exactly_one_alert_per_episode():
+    notifier = FakeNotifier()
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        notifier=notifier,
+        risk_config=RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_drawdown_pct=0.05),
+    )
+    runner.risk_manager.peak_equity = 50000.0
+    runner.risk_manager.equity = 47000.0  # 6% drawdown, over the 5% limit
+
+    runner._check_drawdown_halt_notification()
+    runner._check_drawdown_halt_notification()  # a second check right after, same poll cycle
+
+    alerts = [m for m in notifier.sent if "circuit breaker tripped" in m]
+    assert len(alerts) == 1
+    assert "6.0%" in alerts[0]
+
+
+def test_drawdown_halt_clears_and_notifies_once_recovered():
+    notifier = FakeNotifier()
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        notifier=notifier,
+        risk_config=RiskConfig(
+            capital=50000, risk_per_trade_pct=0.005, max_drawdown_pct=0.05, drawdown_recovery_period=1
+        ),
+    )
+    runner.risk_manager.peak_equity = 50000.0
+    runner.risk_manager.equity = 47000.0
+
+    runner._check_drawdown_halt_notification()  # trips the breaker, starts the countdown
+    assert any("circuit breaker tripped" in m for m in notifier.sent)
+
+    runner.risk_manager.tick()  # countdown reaches zero -- peak resets, halt clears
+    notifier.sent.clear()
+    runner._check_drawdown_halt_notification()
+
+    assert any("circuit breaker cleared" in m for m in notifier.sent)
+    assert not runner.risk_manager.is_drawdown_halted()
+
+
+def test_status_message_shows_drawdown_from_peak():
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        risk_config=RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_drawdown_pct=0.05),
+    )
+    runner.risk_manager.peak_equity = 50000.0
+    runner.risk_manager.equity = 47000.0
+
+    message = runner._status_message()
+
+    assert "Drawdown from peak: 6.0% of 5% limit" in message
+    assert "HALTED" in message
 
 
 def test_run_forever_notifies_when_run_once_fails():
