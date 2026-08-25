@@ -62,6 +62,7 @@ class StateStore:
         )
         self._ensure_pnl_columns()
         self._ensure_futures_risk_columns()
+        self._ensure_drawdown_halt_column()
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS open_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -134,6 +135,12 @@ class StateStore:
                 self.conn.execute(ddl)
         self.conn.commit()
 
+    def _ensure_drawdown_halt_column(self) -> None:
+        existing = {row[1] for row in self.conn.execute("PRAGMA table_info(risk_state)")}
+        if "drawdown_halt_remaining" not in existing:
+            self.conn.execute("ALTER TABLE risk_state ADD COLUMN drawdown_halt_remaining INTEGER DEFAULT 0")
+        self.conn.commit()
+
     def save_risk_state(
         self,
         risk_manager,
@@ -148,8 +155,8 @@ class StateStore:
             """INSERT INTO risk_state (id, daily_loss, daily_trades, open_positions, allocated_capital,
                 consecutive_losses, cooldown_remaining, current_day, cumulative_pnl, closed_trades,
                 winning_trades, losing_trades, equity, peak_equity, allocated_margin, notional_exposure,
-                cumulative_funding_paid)
-               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                cumulative_funding_paid, drawdown_halt_remaining)
+               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                 daily_loss=excluded.daily_loss, daily_trades=excluded.daily_trades,
                 open_positions=excluded.open_positions, allocated_capital=excluded.allocated_capital,
@@ -159,7 +166,8 @@ class StateStore:
                 losing_trades=excluded.losing_trades, equity=excluded.equity,
                 peak_equity=excluded.peak_equity, allocated_margin=excluded.allocated_margin,
                 notional_exposure=excluded.notional_exposure,
-                cumulative_funding_paid=excluded.cumulative_funding_paid""",
+                cumulative_funding_paid=excluded.cumulative_funding_paid,
+                drawdown_halt_remaining=excluded.drawdown_halt_remaining""",
             (
                 risk_manager.daily_loss,
                 risk_manager.daily_trades,
@@ -177,6 +185,7 @@ class StateStore:
                 risk_manager.allocated_margin,
                 risk_manager.notional_exposure,
                 cumulative_funding_paid,
+                risk_manager.drawdown_halt_remaining,
             ),
         )
         self.conn.commit()

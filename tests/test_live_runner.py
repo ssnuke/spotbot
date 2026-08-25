@@ -1149,6 +1149,80 @@ def test_emergency_close_notifies_when_cancel_all_orders_fails():
     assert any("EMERGENCY CLOSE" in m for m in notifier.sent)
 
 
+def test_cooldown_decay_persists_across_restart_not_just_trade_events():
+    # Regression test: cooldown_remaining decays every tick() (once per poll), but
+    # save_risk_state() used to only be called on trade events (open/close/funding/day-roll).
+    # A restart during a quiet cooldown period (no trades, since cooldown blocks them) would
+    # reload whatever was last saved -- typically close to the full cooldown_period, discarding
+    # however many ticks had actually elapsed. run_forever() now saves once per poll specifically
+    # to prevent this; this test drives that same tick+save pattern directly.
+    store = StateStore(":memory:")
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        store=store,
+        risk_config=RiskConfig(capital=50000, risk_per_trade_pct=0.005, cooldown_period=100),
+    )
+    runner.risk_manager.cooldown_remaining = 100
+    runner._save_risk_state()  # the "trade event" save that originally set cooldown=100
+
+    for _ in range(30):
+        runner.risk_manager.tick()
+        runner._save_risk_state()  # what run_forever's loop now does every poll
+
+    assert runner.risk_manager.cooldown_remaining == 70
+
+    restarted = _make_runner(_make_candles([100.0] * 5), store=store)
+    assert restarted.risk_manager.cooldown_remaining == 70  # decayed value, not the stale 100
+
+
+def test_drawdown_halt_remaining_persists_across_restart():
+    store = StateStore(":memory:")
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        store=store,
+        risk_config=RiskConfig(capital=50000, risk_per_trade_pct=0.005, drawdown_recovery_period=2016),
+    )
+    runner.risk_manager.peak_equity = 50000.0
+    runner.risk_manager.equity = 47000.0
+    runner._check_drawdown_halt_notification()  # starts the countdown at 2016
+    assert runner.risk_manager.drawdown_halt_remaining == 2016
+    runner._save_risk_state()
+
+    for _ in range(500):
+        runner.risk_manager.tick()
+    assert runner.risk_manager.drawdown_halt_remaining == 1516
+    runner._save_risk_state()
+
+    restarted = _make_runner(_make_candles([100.0] * 5), store=store)
+    assert restarted.risk_manager.drawdown_halt_remaining == 1516
+
+
+def test_run_forever_persists_tick_decay_every_poll_not_just_trade_events():
+    # Confirms run_forever() itself (not just the underlying save/restore mechanism) calls
+    # _save_risk_state() after tick() every poll -- a StopAfterOneCandleFeed with no trading
+    # signal (flat prices) means no trade event would otherwise trigger a save.
+    runner_holder = {}
+
+    class StopAfterOnePoll(FakeDataFeed):
+        def get_recent_candles(self, symbol, interval="5m", limit=100):
+            candles = super().get_recent_candles(symbol, interval, limit)
+            runner_holder["runner"]._stop_requested = True
+            return candles
+
+    data_feed = StopAfterOnePoll(_make_candles([100.0] * 30))
+    runner = _make_runner(
+        [], data_feed=data_feed, command_poll_interval_seconds=0,
+        risk_config=RiskConfig(capital=50000, risk_per_trade_pct=0.005, cooldown_period=100),
+    )
+    runner.risk_manager.cooldown_remaining = 5
+    runner_holder["runner"] = runner
+
+    runner.run_forever()
+
+    persisted = runner.store.load_risk_state()
+    assert persisted["cooldown_remaining"] == 4  # decayed by tick() and saved, despite no trade
+
+
 def test_run_forever_notifies_when_poll_commands_fails():
     runner_holder = {}
 

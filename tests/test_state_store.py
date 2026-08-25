@@ -14,6 +14,7 @@ def test_risk_state_round_trip():
     manager.cooldown_remaining = 5
     manager.equity = 46500.0
     manager.peak_equity = 51000.0
+    manager.drawdown_halt_remaining = 1500
 
     store.save_risk_state(manager, current_day="2026-07-23", cumulative_funding_paid=-3.5)
     state = store.load_risk_state()
@@ -29,6 +30,7 @@ def test_risk_state_round_trip():
     assert state["equity"] == 46500.0
     assert state["peak_equity"] == 51000.0
     assert state["cumulative_funding_paid"] == -3.5
+    assert state["drawdown_halt_remaining"] == 1500
 
 
 def test_risk_state_upsert_overwrites_previous_row():

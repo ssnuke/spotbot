@@ -258,6 +258,7 @@ class LiveRunner:
         self.risk_manager.notional_exposure = state.get("notional_exposure") or 0.0
         self.risk_manager.consecutive_losses = state["consecutive_losses"]
         self.risk_manager.cooldown_remaining = state["cooldown_remaining"]
+        self.risk_manager.drawdown_halt_remaining = state.get("drawdown_halt_remaining") or 0
         self._current_day = state["current_day"]
         self.cumulative_pnl = state.get("cumulative_pnl", 0.0) or 0.0
         self.cumulative_funding_paid = state.get("cumulative_funding_paid", 0.0) or 0.0
@@ -1028,6 +1029,11 @@ class LiveRunner:
                     self._log(f"Error in run_once: {exc}")
                     self.notifier.send(f"\U0001F6D1 Error in trading loop (will retry next poll):\n{exc}")
                 self.risk_manager.tick()
+                # tick() decays cooldown_remaining/drawdown_halt_remaining purely in memory --
+                # without a save here, a restart during an active cooldown or drawdown-recovery
+                # countdown reloads whatever was last persisted (from the trade event that
+                # started it), silently discarding however much time had actually elapsed since.
+                self._save_risk_state()
 
             now = time.time()
             if now - last_summary_at >= self.summary_interval_seconds:
