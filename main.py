@@ -609,6 +609,7 @@ def main() -> None:
             long_only=config.live.long_only,
             summary_interval_seconds=config.live.summary_interval_seconds,
             command_poll_interval_seconds=config.live.command_poll_interval_seconds,
+            taker_fee_pct=config.live.taker_fee_pct,
             telemetry=Telemetry(enabled=True, logger=print if args.verbose else None),
         )
     except ValueError as error:

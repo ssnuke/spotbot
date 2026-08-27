@@ -55,6 +55,29 @@ def _extract_fill(order: dict, fallback_price: float, fallback_quantity: float =
     return price, total_qty, total_fee
 
 
+def _extract_futures_fill(
+    order: dict, fallback_price: float, fallback_quantity: float, taker_fee_pct: float
+) -> tuple[float, float, float]:
+    """Returns (fill_price, filled_quantity, total_fee) for a FUTURES order response.
+
+    Unlike spot, Binance's futures order response never includes a "fills" array with
+    per-fill commission -- it reports the real execution directly via avgPrice/executedQty,
+    with actual fees only available from separate endpoints (userTrades/income), not here.
+    Falling through to `_extract_fill` for a futures order means `order.get("fills")` is
+    always empty, silently returning the FALLBACK reference price (not the real fill price --
+    hiding slippage) and a hardcoded zero fee, for every single live futures trade. This uses
+    the real avgPrice/executedQty when present and estimates the fee from the executed
+    notional at the configured taker rate, since the exact commission isn't available here."""
+    avg_price = order.get("avgPrice")
+    executed_qty = order.get("executedQty")
+    if avg_price is None or executed_qty is None:
+        return _extract_fill(order, fallback_price, fallback_quantity)
+    price = float(avg_price) if float(avg_price) > 0 else fallback_price
+    quantity = float(executed_qty)
+    fee = quantity * price * taker_fee_pct
+    return price, quantity, fee
+
+
 class LiveRunner:
     """Runs the TAE strategy continuously against live Binance market data, mirroring
     the backtester's exit logic (partial exit, trailing stop, take-profit) in real time.
@@ -91,6 +114,7 @@ class LiveRunner:
         mark_price_divergence_pct: float = 0.01,
         mark_price_divergence_max_ticks: int = 3,
         kill_switch_file_path: str = "KILL_SWITCH",
+        taker_fee_pct: float = 0.0005,
     ):
         self._fx_rate_provider = fx_rate_provider or get_usd_inr_rate
         self.symbol = symbol
@@ -110,6 +134,7 @@ class LiveRunner:
         self.mark_price_divergence_pct = mark_price_divergence_pct
         self.mark_price_divergence_max_ticks = mark_price_divergence_max_ticks
         self.kill_switch_file_path = kill_switch_file_path
+        self.taker_fee_pct = taker_fee_pct
 
         self.data_feed = data_feed or BinanceDataFeed()
         self.order_executor = order_executor or SimulatedOrderExecutor()
@@ -149,6 +174,16 @@ class LiveRunner:
             self.risk_manager.current_side = None
         self.risk_manager.daily_trades = max(0, self.risk_manager.daily_trades - 1)
         self._save_risk_state()
+
+    def _extract_order_fill(
+        self, order: dict, fallback_price: float, fallback_quantity: float = 0.0
+    ) -> tuple[float, float, float]:
+        """Dispatches to the correct fill-extraction logic for the current market type --
+        futures order responses have a different shape than spot's (see _extract_futures_fill)
+        and silently fall back to a wrong price and a hardcoded zero fee if parsed the spot way."""
+        if self.futures_client is not None:
+            return _extract_futures_fill(order, fallback_price, fallback_quantity, self.taker_fee_pct)
+        return _extract_fill(order, fallback_price, fallback_quantity)
 
     def _refresh_symbol_filters(self) -> bool:
         """Re-fetches exchange lot-size/tick-size/min-notional filters for self.symbol. Exchange
@@ -571,7 +606,7 @@ class LiveRunner:
             )
             return
 
-        fill_price, filled_quantity, entry_fee = _extract_fill(order, fallback_price=entry_price, fallback_quantity=quantity)
+        fill_price, filled_quantity, entry_fee = self._extract_order_fill(order, fallback_price=entry_price, fallback_quantity=quantity)
         if filled_quantity <= 0:
             self._log(f"Order placed but nothing filled (qty=0), releasing reserved capital")
             self._release_reserved_trade_slot(plan)
@@ -646,7 +681,7 @@ class LiveRunner:
             self.notifier.send(f"⚠️ Partial exit failed for {trade.symbol}, will retry next poll:\n{exc}")
             return
 
-        partial_price, filled_qty, partial_fee = _extract_fill(order, fallback_price=current_price, fallback_quantity=partial_qty)
+        partial_price, filled_qty, partial_fee = self._extract_order_fill(order, fallback_price=current_price, fallback_quantity=partial_qty)
         if filled_qty <= 0:
             self._log("Partial exit order placed but nothing filled, will retry next poll")
             return
@@ -722,7 +757,7 @@ class LiveRunner:
         # partial fill leaving genuine residual quantity open at the exchange is not handled
         # (the trade is always treated as fully closed below) -- an accepted, very low-probability
         # gap at this bot's tiny position sizes, worth revisiting if position sizes scale up a lot.
-        exit_price, filled_qty, exit_fee = _extract_fill(
+        exit_price, filled_qty, exit_fee = self._extract_order_fill(
             order, fallback_price=current_price, fallback_quantity=trade.remaining_quantity
         )
         if trade.side == "buy":

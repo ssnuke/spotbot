@@ -1,7 +1,7 @@
 import pytest
 
 from app.binance_client import SymbolFilters
-from app.live_runner import LiveRunner
+from app.live_runner import LiveRunner, _extract_futures_fill
 from app.order_executor import LiveOrderExecutor, SimulatedOrderExecutor, TestnetOrderExecutor
 from app.risk_manager import RiskConfig, RiskManager
 from app.state_store import ClosedTradeRecord, OpenTradeState, StateStore
@@ -1126,6 +1126,59 @@ def test_failed_close_order_notifies_after_exhausting_retry():
 class _RaisingFundingFuturesClient(FakeFuturesClient):
     def get_funding_payments(self, symbol, start_time_ms):
         raise RuntimeError("income endpoint unreachable")
+
+
+def test_extract_futures_fill_uses_real_avg_price_and_estimates_fee():
+    # Regression test: real Binance futures order responses have no "fills" array with
+    # commission the way spot's do -- they report avgPrice/executedQty directly. Falling
+    # through to the spot-shaped parser (which just returns the FALLBACK reference price and
+    # a hardcoded zero fee when "fills" is empty) silently hid slippage and every trade's real
+    # fee for every live futures trade.
+    order = {"orderId": 1, "status": "FILLED", "avgPrice": "101.2300", "executedQty": "0.65", "origQty": "0.65"}
+    price, qty, fee = _extract_futures_fill(order, fallback_price=100.0, fallback_quantity=0.65, taker_fee_pct=0.0005)
+    assert price == pytest.approx(101.23)  # the REAL fill price, not the fallback reference price
+    assert qty == pytest.approx(0.65)
+    assert fee == pytest.approx(0.65 * 101.23 * 0.0005)
+    assert fee > 0
+
+
+def test_extract_futures_fill_falls_back_when_avg_price_missing():
+    order = {"orderId": 1, "status": "FILLED"}
+    price, qty, fee = _extract_futures_fill(order, fallback_price=100.0, fallback_quantity=0.65, taker_fee_pct=0.0005)
+    assert price == 100.0
+    assert qty == 0.65
+    assert fee == 0.0
+
+
+class _RealisticFuturesOrderExecutor:
+    """Returns order responses shaped like Binance's REAL futures API (avgPrice/executedQty,
+    no "fills" array) -- unlike every other order executor test double in this file, which
+    (like the code being tested here used to assume) mimics spot's "fills" shape instead."""
+
+    def __init__(self, avg_price):
+        self.avg_price = avg_price
+
+    def place_order(self, symbol, side, quantity, reference_price, reduce_only=False):
+        return {
+            "orderId": "REAL-FUT", "status": "FILLED",
+            "avgPrice": str(self.avg_price), "executedQty": str(quantity), "origQty": str(quantity),
+        }
+
+
+def test_open_position_in_futures_mode_uses_real_fill_price_and_nonzero_fee():
+    closes = [100.0 + i * 0.5 for i in range(60)]
+    executor = _RealisticFuturesOrderExecutor(avg_price=131.75)  # deliberately different from any candle close
+    futures_client = FakeFuturesClient()
+    runner = _make_runner(
+        _make_candles(closes), order_executor=executor, futures_client=futures_client, market_type="futures",
+        risk_config=RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_open_positions=3, leverage=2.0),
+    )
+
+    runner.run_once()
+
+    open_trade = runner.store.list_open_trades()[0]
+    assert open_trade.entry_execution_price == pytest.approx(131.75)  # real avgPrice, not the candle-close reference
+    assert open_trade.total_fees > 0  # estimated from the real executed notional, not hardcoded to zero
 
 
 def test_equity_reconciliation_corrects_drift_and_notifies():

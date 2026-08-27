@@ -102,6 +102,7 @@ class LiveConfigData:
     long_only: bool = False  # skip sell/short signals -- required for real spot execution, which can't short
     summary_interval_seconds: int = 3600
     command_poll_interval_seconds: int = 5
+    taker_fee_pct: float = 0.0005
 
 
 @dataclass

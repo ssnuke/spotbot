@@ -80,7 +80,8 @@
     "market_type": "futures",
     "long_only": false,
     "summary_interval_seconds": 3600,
-    "command_poll_interval_seconds": 5
+    "command_poll_interval_seconds": 5,
+    "taker_fee_pct": 0.0005
   },
   "symbol": "SOL/USDT",
   "csv_path": "historical.csv",
