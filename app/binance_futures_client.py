@@ -92,6 +92,14 @@ class BinanceFuturesClient:
     def get_account_info(self) -> dict:
         return self._signed_request("GET", "/fapi/v3/account", {})
 
+    def get_wallet_balance(self) -> float:
+        """USDT-M futures wallet balance: cumulative realized PnL plus deposits minus
+        withdrawals, fees, and funding -- excludes unrealized PnL on open positions. This is
+        the real, exchange-side realized-equity figure, on the same realized-only basis as
+        RiskManager.equity -- used to correct that self-tracked figure when it drifts from
+        what the account actually has (see LiveRunner._reconcile_equity_with_exchange)."""
+        return float(self.get_account_info()["totalWalletBalance"])
+
     def get_symbol_filters(self, symbol: str) -> FuturesSymbolFilters:
         # Unlike spot's /api/v3/exchangeInfo, the futures endpoint does NOT filter by the
         # `symbol` query param -- it always returns all ~900 symbols regardless. Blindly taking

@@ -439,6 +439,44 @@ class LiveRunner:
         self._log(f"Funding payments applied: {total:+.4f} ({len(payments)} entries)")
         self.notifier.send(f"\U0001F4B8 Funding: {self._fmt_usdt(total, signed=True)} ({len(payments)} payment(s))")
 
+    def _reconcile_equity_with_exchange(self) -> None:
+        """Corrects drift between the bot's self-tracked equity (a running sum of each trade's
+        OWN per-trade PnL calculation) and Binance's real wallet balance. The two can
+        legitimately diverge: one-way futures mode nets same-side entries into a single
+        position with ONE blended average entry price, but this bot tracks each stacked entry
+        (allowed whenever min_entry_spacing_ticks lets them open close together) as its own
+        independent trade with its OWN remembered entry price for PnL purposes -- so the two
+        are computing genuinely different numbers from the same fills. Since equity/peak_equity
+        drive the drawdown circuit breaker and position sizing, letting that drift silently is
+        a real risk-management problem, not just a cosmetic display mismatch."""
+        if self.futures_client is None:
+            return
+        try:
+            real_equity = self.futures_client.get_wallet_balance()
+        except Exception as exc:
+            self._log(f"Failed to reconcile equity with exchange: {exc}")
+            return
+
+        delta = real_equity - self.risk_manager.equity
+        if abs(delta) < 0.02:
+            return
+
+        self.risk_manager.equity = real_equity
+        if self.risk_manager.equity > self.risk_manager.peak_equity:
+            self.risk_manager.peak_equity = self.risk_manager.equity
+        self.cumulative_pnl += delta
+        self._save_risk_state()
+
+        self._log(f"Reconciled equity with exchange: {delta:+.4f} USDT correction (now {real_equity:.4f})")
+        self.notifier.send(
+            f"\U0001F527 Equity reconciled with exchange: {delta:+.4f} USDT correction.\n"
+            f"This happens when stacked positions get netted by Binance differently than this "
+            f"bot tracks them internally. Capital is now {self._fmt_usdt(self.risk_manager.equity)}.\n"
+            f"Note: this corrects equity/drawdown tracking specifically -- daily-loss and "
+            f"consecutive-loss counters are still based on this bot's own per-trade PnL and can "
+            f"carry the same small inaccuracy."
+        )
+
     def _check_kill_switch_file(self) -> None:
         """A Telegram-independent stop mechanism: if a sentinel file is present, stop exactly
         like the /kill command would, distinguishable in the log from a Telegram-issued kill."""
@@ -961,6 +999,7 @@ class LiveRunner:
     def run_once(self) -> None:
         self._maybe_roll_day()
         self._check_funding_payments()
+        self._reconcile_equity_with_exchange()
         prices, last_open_time = self._fetch_price_history()
         if not prices:
             self._log("No price data available")

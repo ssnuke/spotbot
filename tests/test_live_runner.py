@@ -28,6 +28,7 @@ class FakeFuturesClient:
         fail_position_mode=False,
         fail_margin_type=False,
         fail_leverage=False,
+        wallet_balance=None,
     ):
         self.mark_price = mark_price
         self.position_risk = position_risk
@@ -35,9 +36,15 @@ class FakeFuturesClient:
         self.fail_position_mode = fail_position_mode
         self.fail_margin_type = fail_margin_type
         self.fail_leverage = fail_leverage
+        self.wallet_balance = wallet_balance
         self.cancel_all_calls = 0
         self.set_leverage_calls = []
         self.set_margin_type_calls = []
+
+    def get_wallet_balance(self):
+        if self.wallet_balance is None:
+            raise NotImplementedError("wallet_balance not configured on this FakeFuturesClient")
+        return self.wallet_balance
 
     def set_position_mode(self, dual_side=False):
         if self.fail_position_mode:
@@ -1119,6 +1126,94 @@ def test_failed_close_order_notifies_after_exhausting_retry():
 class _RaisingFundingFuturesClient(FakeFuturesClient):
     def get_funding_payments(self, symbol, start_time_ms):
         raise RuntimeError("income endpoint unreachable")
+
+
+def test_equity_reconciliation_corrects_drift_and_notifies():
+    notifier = FakeNotifier()
+    futures_client = FakeFuturesClient(wallet_balance=150.0)
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=futures_client,
+        market_type="futures",
+        notifier=notifier,
+        risk_config=RiskConfig(capital=100, leverage=2.0),
+    )
+    runner.risk_manager.equity = 120.0
+    runner.risk_manager.peak_equity = 120.0
+    runner.cumulative_pnl = 20.0
+
+    runner._reconcile_equity_with_exchange()
+
+    assert runner.risk_manager.equity == pytest.approx(150.0)
+    assert runner.risk_manager.peak_equity == pytest.approx(150.0)  # raised to match the higher real value
+    assert runner.cumulative_pnl == pytest.approx(50.0)  # absorbs the same +30 correction
+    assert any("Equity reconciled" in m and "+30.0000" in m for m in notifier.sent)
+
+
+def test_equity_reconciliation_does_not_lower_peak_equity():
+    # A downward correction must not retroactively lower peak_equity -- the drawdown cap should
+    # stay conservative (comparing against the highest equity ever legitimately reached), not
+    # get relaxed because a later correction revealed the self-tracked number was too high.
+    futures_client = FakeFuturesClient(wallet_balance=90.0)
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=futures_client,
+        market_type="futures",
+        risk_config=RiskConfig(capital=100, leverage=2.0),
+    )
+    runner.risk_manager.equity = 100.0
+    runner.risk_manager.peak_equity = 130.0
+
+    runner._reconcile_equity_with_exchange()
+
+    assert runner.risk_manager.equity == pytest.approx(90.0)
+    assert runner.risk_manager.peak_equity == pytest.approx(130.0)  # untouched
+
+
+def test_equity_reconciliation_ignores_tiny_discrepancies():
+    notifier = FakeNotifier()
+    futures_client = FakeFuturesClient(wallet_balance=100.005)
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=futures_client,
+        market_type="futures",
+        notifier=notifier,
+        risk_config=RiskConfig(capital=100, leverage=2.0),
+    )
+    runner.risk_manager.equity = 100.0
+
+    runner._reconcile_equity_with_exchange()
+
+    assert runner.risk_manager.equity == 100.0  # untouched -- below the noise threshold
+    assert notifier.sent == []
+
+
+def test_equity_reconciliation_skipped_for_spot_mode():
+    runner = _make_runner(_make_candles([100.0] * 5))  # no futures_client
+    runner.risk_manager.equity = 100.0
+    runner._reconcile_equity_with_exchange()
+    assert runner.risk_manager.equity == 100.0
+
+
+def test_equity_reconciliation_handles_fetch_failure_gracefully():
+    class _RaisingWalletFuturesClient(FakeFuturesClient):
+        def get_wallet_balance(self):
+            raise RuntimeError("account endpoint unreachable")
+
+    notifier = FakeNotifier()
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=_RaisingWalletFuturesClient(),
+        market_type="futures",
+        notifier=notifier,
+        risk_config=RiskConfig(capital=100, leverage=2.0),
+    )
+    runner.risk_manager.equity = 100.0
+
+    runner._reconcile_equity_with_exchange()  # must not raise
+
+    assert runner.risk_manager.equity == 100.0
+    assert notifier.sent == []  # a fetch failure logs, it doesn't alert -- next poll retries
 
 
 def test_funding_payment_fetch_failure_notifies():

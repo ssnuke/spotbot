@@ -69,3 +69,11 @@ def test_get_symbol_filters_does_not_rely_on_server_side_symbol_filtering():
         client.get_symbol_filters("SOL/USDT")
     mock_get.assert_called_once()
     assert mock_get.call_args.kwargs.get("params") is None
+
+
+def test_get_wallet_balance_reads_total_wallet_balance():
+    client = _make_client()
+    account_info = {"totalWalletBalance": "127.6543", "totalUnrealizedProfit": "9.99"}
+    with patch.object(client, "get_account_info", return_value=account_info):
+        balance = client.get_wallet_balance()
+    assert balance == pytest.approx(127.6543)
