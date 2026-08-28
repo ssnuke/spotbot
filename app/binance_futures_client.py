@@ -135,6 +135,12 @@ class BinanceFuturesClient:
             "type": "MARKET",
             "quantity": f"{quantity:.8f}".rstrip("0").rstrip("."),
             "reduceOnly": "true" if reduce_only else "false",
+            # Explicit, not left to Binance's default: the lighter "ACK" response shape can
+            # omit or zero out avgPrice/executedQty, which is exactly the data
+            # LiveRunner._extract_futures_fill() needs for real fill price and fee -- without
+            # this, a live account can silently fall back to reporting $0.00 fees on every
+            # real futures trade with no visible error anywhere.
+            "newOrderRespType": "RESULT",
         }
         return self._signed_request("POST", "/fapi/v1/order", params)
 

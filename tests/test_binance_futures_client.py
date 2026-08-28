@@ -58,6 +58,31 @@ def test_get_symbol_filters_raises_clearly_for_unknown_symbol():
             client.get_symbol_filters("SOL/USDT")
 
 
+def test_place_market_order_requests_result_response_type():
+    # Regression test: Binance's lighter "ACK" response shape can omit or zero out
+    # avgPrice/executedQty, which LiveRunner._extract_futures_fill() needs for the real fill
+    # price and fee -- this caused live futures trades to silently report $0.00 fees with no
+    # visible error. Must not depend on whatever Binance's default response type happens to
+    # be; request the fill-data-rich shape explicitly every time.
+    client = _make_client()
+    with patch.object(client, "_signed_request", return_value={"orderId": 1}) as mock_request:
+        client.place_market_order("SOL/USDT", "buy", 1.5)
+
+    method, path, params = mock_request.call_args[0]
+    assert method == "POST"
+    assert path == "/fapi/v1/order"
+    assert params["newOrderRespType"] == "RESULT"
+
+
+def test_close_position_market_also_requests_result_response_type():
+    client = _make_client()
+    with patch.object(client, "_signed_request", return_value={"orderId": 1}) as mock_request:
+        client.close_position_market("SOL/USDT", "buy", 1.5)
+
+    _, _, params = mock_request.call_args[0]
+    assert params["newOrderRespType"] == "RESULT"
+
+
 def test_get_symbol_filters_does_not_rely_on_server_side_symbol_filtering():
     # The request must not depend on the `symbol` query param actually working server-side
     # (it doesn't, on the real endpoint) -- confirms the fix fetches the full list and filters
