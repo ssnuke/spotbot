@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the trading bot heartbeat watchdog every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=heartbeat-watchdog.service
+
+[Install]
+WantedBy=timers.target

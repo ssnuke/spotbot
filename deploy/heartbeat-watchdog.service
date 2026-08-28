@@ -1,0 +1,16 @@
+[Unit]
+Description=Trading bot heartbeat watchdog (dead-man's switch)
+# Deliberately does NOT declare After=trading-bot.service or any dependency on it -- this
+# unit must keep running on its own timer even if trading-bot.service has crashed and its
+# own Restart= has given up entirely.
+
+[Service]
+Type=oneshot
+User=botuser
+WorkingDirectory=/home/botuser/trading-bot
+ExecStart=/home/botuser/trading-bot/.venv/bin/python3 scripts/heartbeat_watchdog.py
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/home/botuser/trading-bot

@@ -1,3 +1,6 @@
+import os
+import time
+
 import pytest
 
 from app.binance_client import SymbolFilters
@@ -29,6 +32,7 @@ class FakeFuturesClient:
         fail_margin_type=False,
         fail_leverage=False,
         wallet_balance=None,
+        realized_pnl_income=None,
     ):
         self.mark_price = mark_price
         self.position_risk = position_risk
@@ -37,6 +41,7 @@ class FakeFuturesClient:
         self.fail_margin_type = fail_margin_type
         self.fail_leverage = fail_leverage
         self.wallet_balance = wallet_balance
+        self.realized_pnl_income = realized_pnl_income
         self.cancel_all_calls = 0
         self.set_leverage_calls = []
         self.set_margin_type_calls = []
@@ -45,6 +50,11 @@ class FakeFuturesClient:
         if self.wallet_balance is None:
             raise NotImplementedError("wallet_balance not configured on this FakeFuturesClient")
         return self.wallet_balance
+
+    def get_realized_pnl_income(self, symbol, start_time_ms):
+        if self.realized_pnl_income is None:
+            raise NotImplementedError("realized_pnl_income not configured on this FakeFuturesClient")
+        return self.realized_pnl_income
 
     def set_position_mode(self, dual_side=False):
         if self.fail_position_mode:
@@ -188,6 +198,7 @@ def _make_runner(candles, **overrides):
         store=StateStore(":memory:"),
         telemetry=Telemetry(enabled=False, logger=None),
         fx_rate_provider=lambda: None,  # disable INR conversion (and real network calls) by default
+        heartbeat_file_path=os.devnull,  # run_forever() tests must never touch the real repo dir
     )
     kwargs.update(overrides)
     return LiveRunner(**kwargs)
@@ -1015,6 +1026,23 @@ def test_file_kill_switch_stops_the_loop(tmp_path):
     runner._check_kill_switch_file()
 
 
+def test_write_heartbeat_file_creates_file_with_recent_timestamp(tmp_path):
+    heartbeat_file = tmp_path / "HEARTBEAT"
+    runner = _make_runner(_make_candles([100.0] * 5), heartbeat_file_path=str(heartbeat_file))
+
+    runner._write_heartbeat_file()
+
+    assert heartbeat_file.exists()
+    assert abs(time.time() - float(heartbeat_file.read_text())) < 2.0
+
+
+def test_write_heartbeat_file_survives_unwritable_path():
+    # A directory that doesn't exist -- open() raises OSError. Must not crash the main loop
+    # over what is, at worst, the watchdog losing coverage until the disk issue is fixed.
+    runner = _make_runner(_make_candles([100.0] * 5), heartbeat_file_path="/no/such/directory/HEARTBEAT")
+    runner._write_heartbeat_file()  # must not raise
+
+
 class _FakeFilterClient:
     """Stands in for the `.client` attribute on a real order executor -- exposes
     get_symbol_filters() so LiveRunner's self-healing refresh path has something to call."""
@@ -1181,6 +1209,69 @@ def test_open_position_in_futures_mode_uses_real_fill_price_and_nonzero_fee():
     assert open_trade.total_fees > 0  # estimated from the real executed notional, not hardcoded to zero
 
 
+def test_close_trade_uses_exchange_blended_entry_price_not_tracked_entry():
+    # Binance one-way futures mode blends every same-side stacked entry into ONE
+    # weighted-average position entry price. This trade's own tracked entry (100) can
+    # therefore differ from what the exchange will actually use to compute PnL on close
+    # (110, from a second entry stacked on top). _close_trade must use the exchange's
+    # figure, not the trade's own, so PnL/history match what Binance really recorded.
+    position_risk = {"entryPrice": "110.0", "markPrice": "120.0", "liquidationPrice": "50.0"}
+    futures_client = FakeFuturesClient(mark_price=120.0, position_risk=position_risk)
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=futures_client,
+        market_type="futures",
+        risk_config=RiskConfig(capital=100, leverage=2.0),
+    )
+    _seed_open_trade(runner, side="buy", entry_price=100.0)
+    trade = runner.store.list_open_trades()[0]
+
+    runner._close_trade(trade, current_price=120.0, exit_reason="take_profit")
+
+    history = runner.store.list_recent_trade_history()
+    assert history[0].entry_price == pytest.approx(110.0)
+    assert history[0].pnl == pytest.approx(10.0)  # (120 - 110) * 1.0, not (120 - 100)
+
+
+def test_close_trade_falls_back_to_tracked_entry_when_position_risk_unavailable():
+    futures_client = FakeFuturesClient(mark_price=120.0, position_risk=None)
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=futures_client,
+        market_type="futures",
+        risk_config=RiskConfig(capital=100, leverage=2.0),
+    )
+    _seed_open_trade(runner, side="buy", entry_price=100.0)
+    trade = runner.store.list_open_trades()[0]
+
+    runner._close_trade(trade, current_price=120.0, exit_reason="take_profit")
+
+    history = runner.store.list_recent_trade_history()
+    assert history[0].entry_price == pytest.approx(100.0)
+    assert history[0].pnl == pytest.approx(20.0)
+
+
+def test_partial_exit_uses_exchange_blended_entry_price():
+    position_risk = {"entryPrice": "110.0", "markPrice": "120.0", "liquidationPrice": "50.0"}
+    futures_client = FakeFuturesClient(mark_price=120.0, position_risk=position_risk)
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=futures_client,
+        market_type="futures",
+        risk_config=RiskConfig(capital=100, leverage=2.0),
+    )
+    _seed_open_trade(runner, side="buy", entry_price=100.0)
+    trade = runner.store.list_open_trades()[0]
+    trade.quantity = 1.0
+    trade.remaining_quantity = 1.0
+
+    runner._take_partial_exit(trade, current_price=120.0)
+
+    history = runner.store.list_recent_trade_history()
+    assert history[0].entry_price == pytest.approx(110.0)
+    assert history[0].pnl == pytest.approx(5.0)  # (120 - 110) * 0.5, not (120 - 100)
+
+
 def test_equity_reconciliation_corrects_drift_and_notifies():
     notifier = FakeNotifier()
     futures_client = FakeFuturesClient(wallet_balance=150.0)
@@ -1267,6 +1358,71 @@ def test_equity_reconciliation_handles_fetch_failure_gracefully():
 
     assert runner.risk_manager.equity == 100.0
     assert notifier.sent == []  # a fetch failure logs, it doesn't alert -- next poll retries
+
+
+def test_daily_loss_reconciliation_corrects_drift_and_notifies():
+    notifier = FakeNotifier()
+    income = [{"income": "-15.0"}, {"income": "3.0"}]  # net realized loss today = 15 (gains don't offset)
+    futures_client = FakeFuturesClient(realized_pnl_income=income)
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=futures_client,
+        market_type="futures",
+        notifier=notifier,
+        risk_config=RiskConfig(capital=100, leverage=2.0),
+    )
+    runner.risk_manager.daily_loss = 2.0
+
+    runner._reconcile_daily_loss_with_exchange()
+
+    assert runner.risk_manager.daily_loss == pytest.approx(15.0)
+    assert any("Daily-loss" in m and "+13.0000" in m for m in notifier.sent)
+
+
+def test_daily_loss_reconciliation_ignores_tiny_discrepancies():
+    notifier = FakeNotifier()
+    futures_client = FakeFuturesClient(realized_pnl_income=[{"income": "-2.001"}])
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=futures_client,
+        market_type="futures",
+        notifier=notifier,
+        risk_config=RiskConfig(capital=100, leverage=2.0),
+    )
+    runner.risk_manager.daily_loss = 2.0
+
+    runner._reconcile_daily_loss_with_exchange()
+
+    assert runner.risk_manager.daily_loss == 2.0
+    assert notifier.sent == []
+
+
+def test_daily_loss_reconciliation_skipped_for_spot_mode():
+    runner = _make_runner(_make_candles([100.0] * 5))  # no futures_client
+    runner.risk_manager.daily_loss = 5.0
+    runner._reconcile_daily_loss_with_exchange()
+    assert runner.risk_manager.daily_loss == 5.0
+
+
+def test_daily_loss_reconciliation_handles_fetch_failure_gracefully():
+    class _RaisingIncomeFuturesClient(FakeFuturesClient):
+        def get_realized_pnl_income(self, symbol, start_time_ms):
+            raise RuntimeError("income endpoint unreachable")
+
+    notifier = FakeNotifier()
+    runner = _make_runner(
+        _make_candles([100.0] * 5),
+        futures_client=_RaisingIncomeFuturesClient(),
+        market_type="futures",
+        notifier=notifier,
+        risk_config=RiskConfig(capital=100, leverage=2.0),
+    )
+    runner.risk_manager.daily_loss = 5.0
+
+    runner._reconcile_daily_loss_with_exchange()  # must not raise
+
+    assert runner.risk_manager.daily_loss == 5.0
+    assert notifier.sent == []
 
 
 def test_funding_payment_fetch_failure_notifies():

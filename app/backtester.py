@@ -362,6 +362,19 @@ class Backtester:
                     exit_reason = "take_profit"
                     break
 
+                # Live re-evaluates the strategy every closed candle and closes first (no
+                # naked reverse) the moment it sees a signal for the OPPOSITE side of the
+                # open position -- see LiveRunner.run_once's current_side check. Modeled here
+                # the same way: only reached when none of the price-level exits above fired
+                # on this candle, using the same window-up-to-this-candle the live poll would
+                # have seen.
+                reversal_signal = self.strategy.generate_signal(prices[: future_index + 1], symbol)
+                if reversal_signal is not None and reversal_signal.side != signal.side:
+                    if not (self.config.long_only and reversal_signal.side == "sell"):
+                        exit_price = prices[future_index]
+                        exit_reason = "signal_reversal"
+                        break
+
             if exit_price is None:
                 exit_price = prices[-1]
                 exit_reason = "eod"

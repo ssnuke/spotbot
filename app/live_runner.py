@@ -115,6 +115,7 @@ class LiveRunner:
         mark_price_divergence_max_ticks: int = 3,
         kill_switch_file_path: str = "KILL_SWITCH",
         taker_fee_pct: float = 0.0005,
+        heartbeat_file_path: str = "HEARTBEAT",
     ):
         self._fx_rate_provider = fx_rate_provider or get_usd_inr_rate
         self.symbol = symbol
@@ -135,6 +136,7 @@ class LiveRunner:
         self.mark_price_divergence_max_ticks = mark_price_divergence_max_ticks
         self.kill_switch_file_path = kill_switch_file_path
         self.taker_fee_pct = taker_fee_pct
+        self.heartbeat_file_path = heartbeat_file_path
 
         self.data_feed = data_feed or BinanceDataFeed()
         self.order_executor = order_executor or SimulatedOrderExecutor()
@@ -346,6 +348,30 @@ class LiveRunner:
                 return mark_price
         return fallback_price
 
+    def _get_exchange_entry_price(self, fallback: float) -> float:
+        """Binance one-way futures mode blends every same-side entry into a single position
+        with ONE weighted-average entry price -- when min_entry_spacing_ticks lets positions
+        stack, THIS (not any individual trade's own remembered entry) is what the exchange
+        actually uses to compute realized PnL on a close. Fetched fresh before every close/
+        partial-exit and used as the PnL basis instead of the trade's own tracked entry, so
+        this bot's PnL/daily-loss/consecutive-loss numbers match what Binance really recorded
+        instead of silently drifting whenever stacking happens. A no-op when there's no
+        stacking (or in spot mode): the "blended average" of one entry is just that entry."""
+        if self.futures_client is None:
+            return fallback
+        try:
+            position_risk = self.futures_client.get_position_risk(self.symbol)
+        except Exception as exc:
+            self._log(f"Failed to fetch exchange entry price, using tracked entry: {exc}")
+            return fallback
+        if position_risk is None:
+            return fallback
+        try:
+            entry_price = float(position_risk.get("entryPrice", 0) or 0)
+        except (TypeError, ValueError):
+            return fallback
+        return entry_price if entry_price > 0 else fallback
+
     def _estimate_margin_ratio(self, position_risk: dict) -> Optional[float]:
         """Distance-based proxy for closeness to liquidation: 0.0 at entry price, approaching
         1.0 as mark price approaches the liquidation price. Deliberately avoids depending on
@@ -505,11 +531,43 @@ class LiveRunner:
         self._log(f"Reconciled equity with exchange: {delta:+.4f} USDT correction (now {real_equity:.4f})")
         self.notifier.send(
             f"\U0001F527 Equity reconciled with exchange: {delta:+.4f} USDT correction.\n"
-            f"This happens when stacked positions get netted by Binance differently than this "
-            f"bot tracks them internally. Capital is now {self._fmt_usdt(self.risk_manager.equity)}.\n"
-            f"Note: this corrects equity/drawdown tracking specifically -- daily-loss and "
-            f"consecutive-loss counters are still based on this bot's own per-trade PnL and can "
-            f"carry the same small inaccuracy."
+            f"Capital is now {self._fmt_usdt(self.risk_manager.equity)}. Individual trade PnL is "
+            f"now computed from the exchange's own blended entry price at close time, so this "
+            f"should mainly catch whatever that per-trade fix doesn't (e.g. a failed lookup)."
+        )
+
+    def _reconcile_daily_loss_with_exchange(self) -> None:
+        """Cross-checks self-tracked daily_loss (a running sum of each trade's OWN pnl sign,
+        via register_trade_result) against Binance's real REALIZED_PNL income for today. Each
+        trade's own PnL is now computed from the exchange's blended entry price at close time
+        (see _get_exchange_entry_price), so this is a safety net for whatever that doesn't
+        catch -- e.g. an individual get_position_risk() lookup failing and silently falling
+        back to this bot's own tracked entry for just that one close."""
+        if self.futures_client is None:
+            return
+        try:
+            day_start = datetime.fromisoformat(self._current_day).replace(tzinfo=timezone.utc)
+        except ValueError:
+            return
+        day_start_ms = int(day_start.timestamp() * 1000)
+        try:
+            income = self.futures_client.get_realized_pnl_income(self.symbol, day_start_ms)
+        except Exception as exc:
+            self._log(f"Failed to reconcile daily loss with exchange: {exc}")
+            return
+
+        real_daily_loss = sum(max(-float(entry.get("income", 0.0) or 0.0), 0.0) for entry in income)
+        delta = real_daily_loss - self.risk_manager.daily_loss
+        if abs(delta) < 0.02:
+            return
+
+        self.risk_manager.daily_loss = real_daily_loss
+        self._save_risk_state()
+        self._log(f"Reconciled daily_loss with exchange: {delta:+.4f} correction (now {real_daily_loss:.4f})")
+        self.notifier.send(
+            f"\U0001F527 Daily-loss tracking reconciled with exchange: {delta:+.4f} USDT "
+            f"correction (now {self._fmt_usdt(real_daily_loss)}). This is what the daily-loss "
+            f"cap and cooldown decisions use today."
         )
 
     def _check_kill_switch_file(self) -> None:
@@ -518,6 +576,22 @@ class LiveRunner:
         if os.path.exists(self.kill_switch_file_path):
             self._stop_requested = True
             self._log(f"Kill switch file detected at {self.kill_switch_file_path!r}, stopping")
+
+    def _write_heartbeat_file(self) -> None:
+        """Touches a plain file with the current time every main-loop iteration -- an
+        external, dependency-free signal that this process is alive and its loop isn't
+        stuck (network hang, deadlock, etc.). Deliberately a flat file, not the sqlite
+        state store: a separate watchdog process (scripts/heartbeat_watchdog.py, run from
+        its own systemd timer, independent of this bot's own service) reads it to detect
+        "the whole process died and even systemd's restart gave up" -- something this
+        process obviously cannot alert on itself once that's happened. A write failure
+        (e.g. disk full) is logged, not raised -- a missing/stale heartbeat is exactly the
+        watchdog's alert condition, so failing loud here would be redundant, not safer."""
+        try:
+            with open(self.heartbeat_file_path, "w") as handle:
+                handle.write(str(time.time()))
+        except OSError as exc:
+            self._log(f"Failed to write heartbeat file: {exc}")
 
     def _maybe_roll_day(self) -> None:
         today = datetime.now(timezone.utc).date().isoformat()
@@ -661,6 +735,10 @@ class LiveRunner:
         if partial_qty <= 0 or partial_qty >= trade.remaining_quantity:
             return
 
+        # Fetched BEFORE placing the close order -- the exchange's blended entry price for
+        # whatever's still open, which is what Binance itself will use for this reduce's PnL.
+        entry_basis = self._get_exchange_entry_price(fallback=trade.entry_execution_price)
+
         close_side = "SELL" if trade.side == "buy" else "BUY"
         try:
             order, partial_qty = self._place_order_with_filter_refresh(
@@ -686,10 +764,10 @@ class LiveRunner:
             self._log("Partial exit order placed but nothing filled, will retry next poll")
             return
         if trade.side == "buy":
-            partial_pnl = filled_qty * (partial_price - trade.entry_execution_price) - partial_fee
+            partial_pnl = filled_qty * (partial_price - entry_basis) - partial_fee
             trailing_stop = max(trade.stop_loss, current_price * (1 - self.trailing_stop_pct))
         else:
-            partial_pnl = filled_qty * (trade.entry_execution_price - partial_price) - partial_fee
+            partial_pnl = filled_qty * (entry_basis - partial_price) - partial_fee
             trailing_stop = min(trade.stop_loss, current_price * (1 + self.trailing_stop_pct))
 
         trade.remaining_quantity -= filled_qty
@@ -710,7 +788,8 @@ class LiveRunner:
                 id=None,
                 symbol=trade.symbol,
                 side=trade.side,
-                entry_price=trade.entry_execution_price,
+                entry_price=entry_basis,  # the exchange's real entry basis for this PnL, so
+                # Entry/Exit/PnL stay arithmetically consistent in /history and the dashboard
                 exit_price=partial_price,
                 quantity=filled_qty,
                 pnl=partial_pnl,
@@ -730,6 +809,9 @@ class LiveRunner:
         )
 
     def _close_trade(self, trade: OpenTradeState, current_price: float, exit_reason: str) -> None:
+        # Fetched BEFORE placing the close order -- see _get_exchange_entry_price.
+        entry_basis = self._get_exchange_entry_price(fallback=trade.entry_execution_price)
+
         close_side = "SELL" if trade.side == "buy" else "BUY"
         try:
             order, _ = self._place_order_with_filter_refresh(
@@ -761,9 +843,9 @@ class LiveRunner:
             order, fallback_price=current_price, fallback_quantity=trade.remaining_quantity
         )
         if trade.side == "buy":
-            pnl = filled_qty * (exit_price - trade.entry_execution_price) - exit_fee
+            pnl = filled_qty * (exit_price - entry_basis) - exit_fee
         else:
-            pnl = filled_qty * (trade.entry_execution_price - exit_price) - exit_fee
+            pnl = filled_qty * (entry_basis - exit_price) - exit_fee
 
         # The trade's true result includes the entry fee and any partial-exit profit
         # banked earlier in its lifetime, not just this final segment's fill.
@@ -779,7 +861,8 @@ class LiveRunner:
                 id=None,
                 symbol=trade.symbol,
                 side=trade.side,
-                entry_price=trade.entry_execution_price,
+                entry_price=entry_basis,  # the exchange's real entry basis for this PnL, so
+                # Entry/Exit/PnL stay arithmetically consistent in /history and the dashboard
                 exit_price=exit_price,
                 quantity=filled_qty,
                 pnl=pnl,
@@ -1035,6 +1118,7 @@ class LiveRunner:
         self._maybe_roll_day()
         self._check_funding_payments()
         self._reconcile_equity_with_exchange()
+        self._reconcile_daily_loss_with_exchange()
         prices, last_open_time = self._fetch_price_history()
         if not prices:
             self._log("No price data available")
@@ -1088,6 +1172,7 @@ class LiveRunner:
         last_summary_at = time.time()
 
         while not self._stop_requested:
+            self._write_heartbeat_file()
             self._check_kill_switch_file()
             if self._stop_requested:
                 break

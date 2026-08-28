@@ -157,6 +157,18 @@ class BinanceFuturesClient:
         payload = self._signed_request("GET", "/fapi/v1/income", params)
         return payload if isinstance(payload, list) else []
 
+    def get_realized_pnl_income(self, symbol: str, start_time_ms: int) -> list:
+        """Binance's own realized-PnL ledger, one entry per closing fill -- computed using
+        the exchange's real (blended, in one-way mode) position accounting. Used as a
+        defense-in-depth cross-check for this bot's self-tracked daily_loss figure."""
+        params = {
+            "symbol": symbol.upper().replace("/", ""),
+            "incomeType": "REALIZED_PNL",
+            "startTime": start_time_ms,
+        }
+        payload = self._signed_request("GET", "/fapi/v1/income", params)
+        return payload if isinstance(payload, list) else []
+
 
 class BinanceFuturesTestnetClient(BinanceFuturesClient):
     """Signed REST client for Binance's public USDT-M Futures Testnet (fake funds, real

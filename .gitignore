@@ -1,6 +1,8 @@
 .env
 live_state.db
 live_state.db.bak*
+HEARTBEAT
+watchdog_state.json
 __pycache__/
 *.pyc
 .venv/

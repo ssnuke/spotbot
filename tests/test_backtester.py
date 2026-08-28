@@ -297,3 +297,50 @@ def test_funding_disabled_by_default_leaves_cost_at_zero():
 
     assert len(result.trades) >= 1
     assert result.trades[0].funding_cost == 0.0
+
+
+def test_signal_reversal_closes_trade_before_stop_or_target():
+    # Mirrors LiveRunner.run_once's current_side check: live closes an open position the
+    # moment it sees a signal for the OPPOSITE side, even if price never actually touched
+    # the stop or take-profit level. entry=110 (index 4); the price then drifts down to
+    # 109.3 by index 7 -- MomentumStrategy's 3-candle lookback flips to "sell" there
+    # (previous_price becomes the real entry candle, 110, once the flat 100.0 warmup drops
+    # out of the lookback window), while price stays well inside [108.9, 113.3] the whole
+    # time, so this can only be the reversal check firing, not a stop/target touch.
+    config = BacktestConfig(
+        start_capital=10000.0, timeframe="1m", stop_loss_pct=0.01, take_profit_pct=0.03,
+        partial_exit_profit_pct=0.5, max_position_pct=1.0, trade_fee_pct=0.0, slippage_pct=0.0,
+    )
+    candles = _entry_setup_candles()
+    candles.append([0, 109.8, 109.8, 109.8, 109.8, 0])
+    candles.append([0, 109.6, 109.6, 109.6, 109.6, 0])
+    candles.append([0, 109.3, 109.3, 109.3, 109.3, 0])
+
+    result = Backtester(config=config).run(candles)
+
+    assert result.trades
+    trade = result.trades[0]
+    assert trade.exit_reason == "signal_reversal"
+    assert trade.exit_price == pytest.approx(109.3)
+
+
+def test_signal_reversal_does_not_close_long_only_position_on_sell_signal():
+    # long_only backtests can never open a short, so an opposite "sell" signal must not
+    # close the open long via the reversal path either -- matches LiveRunner.run_once,
+    # where the long_only guard runs before the current_side comparison and so a sell
+    # signal never reaches it.
+    config = BacktestConfig(
+        start_capital=10000.0, timeframe="1m", stop_loss_pct=0.01, take_profit_pct=0.03,
+        partial_exit_profit_pct=0.5, max_position_pct=1.0, trade_fee_pct=0.0, slippage_pct=0.0,
+        long_only=True,
+    )
+    candles = _entry_setup_candles()
+    candles.append([0, 109.8, 109.8, 109.8, 109.8, 0])
+    candles.append([0, 109.6, 109.6, 109.6, 109.6, 0])
+    candles.append([0, 109.3, 109.3, 109.3, 109.3, 0])
+
+    result = Backtester(config=config).run(candles)
+
+    assert result.trades
+    trade = result.trades[0]
+    assert trade.exit_reason != "signal_reversal"
