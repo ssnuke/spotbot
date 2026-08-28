@@ -63,6 +63,7 @@ class StateStore:
         self._ensure_pnl_columns()
         self._ensure_futures_risk_columns()
         self._ensure_drawdown_halt_column()
+        self._ensure_reversal_confirmation_columns()
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS open_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,6 +142,17 @@ class StateStore:
             self.conn.execute("ALTER TABLE risk_state ADD COLUMN drawdown_halt_remaining INTEGER DEFAULT 0")
         self.conn.commit()
 
+    def _ensure_reversal_confirmation_columns(self) -> None:
+        existing = {row[1] for row in self.conn.execute("PRAGMA table_info(risk_state)")}
+        migrations = {
+            "pending_reversal_side": "ALTER TABLE risk_state ADD COLUMN pending_reversal_side TEXT DEFAULT NULL",
+            "pending_reversal_streak": "ALTER TABLE risk_state ADD COLUMN pending_reversal_streak INTEGER DEFAULT 0",
+        }
+        for column, ddl in migrations.items():
+            if column not in existing:
+                self.conn.execute(ddl)
+        self.conn.commit()
+
     def save_risk_state(
         self,
         risk_manager,
@@ -150,13 +162,15 @@ class StateStore:
         winning_trades: int = 0,
         losing_trades: int = 0,
         cumulative_funding_paid: float = 0.0,
+        pending_reversal_side: Optional[str] = None,
+        pending_reversal_streak: int = 0,
     ) -> None:
         self.conn.execute(
             """INSERT INTO risk_state (id, daily_loss, daily_trades, open_positions, allocated_capital,
                 consecutive_losses, cooldown_remaining, current_day, cumulative_pnl, closed_trades,
                 winning_trades, losing_trades, equity, peak_equity, allocated_margin, notional_exposure,
-                cumulative_funding_paid, drawdown_halt_remaining)
-               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                cumulative_funding_paid, drawdown_halt_remaining, pending_reversal_side, pending_reversal_streak)
+               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                 daily_loss=excluded.daily_loss, daily_trades=excluded.daily_trades,
                 open_positions=excluded.open_positions, allocated_capital=excluded.allocated_capital,
@@ -167,7 +181,9 @@ class StateStore:
                 peak_equity=excluded.peak_equity, allocated_margin=excluded.allocated_margin,
                 notional_exposure=excluded.notional_exposure,
                 cumulative_funding_paid=excluded.cumulative_funding_paid,
-                drawdown_halt_remaining=excluded.drawdown_halt_remaining""",
+                drawdown_halt_remaining=excluded.drawdown_halt_remaining,
+                pending_reversal_side=excluded.pending_reversal_side,
+                pending_reversal_streak=excluded.pending_reversal_streak""",
             (
                 risk_manager.daily_loss,
                 risk_manager.daily_trades,
@@ -186,6 +202,8 @@ class StateStore:
                 risk_manager.notional_exposure,
                 cumulative_funding_paid,
                 risk_manager.drawdown_halt_remaining,
+                pending_reversal_side,
+                pending_reversal_streak,
             ),
         )
         self.conn.commit()

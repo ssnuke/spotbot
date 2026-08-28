@@ -8,6 +8,7 @@ from app.live_runner import LiveRunner, _extract_futures_fill
 from app.order_executor import LiveOrderExecutor, SimulatedOrderExecutor, TestnetOrderExecutor
 from app.risk_manager import RiskConfig, RiskManager
 from app.state_store import ClosedTradeRecord, OpenTradeState, StateStore
+from app.strategy import Signal
 from app.telemetry import Telemetry
 
 
@@ -871,6 +872,140 @@ def test_opposite_signal_closes_position_before_reopening():
     assert records[0].exit_reason == "signal_reversal"
     # The reversal close returns immediately -- no new (opposite-side) position opened same poll.
     assert runner.risk_manager.open_positions == 0
+
+
+class FakeStrategy:
+    """Returns a pre-programmed sequence of signals, one per generate_signal() call --
+    used for confirmation-candle tests where the exact real TAEStrategy conditions needed to
+    produce the SAME signal on several consecutive (fabricated) polls would be fragile to
+    construct from raw prices."""
+
+    def __init__(self, signals):
+        self._signals = list(signals)
+
+    def generate_signal(self, prices, symbol="BTC/USDT"):
+        side = self._signals.pop(0) if self._signals else None
+        return Signal(symbol=symbol, side=side, confidence=0.8) if side else None
+
+
+def _advance_poll(runner, poll_index):
+    """Feeds a fresh, distinctly-timestamped candle list so run_once()'s "no new closed
+    candle" guard doesn't block re-processing -- simulates one more 5-minute poll arriving."""
+    start = 1_700_000_000_000 + poll_index * 300_000_000
+    runner.data_feed.candles = _make_candles([100.0] * 10, start_time_ms=start)
+    runner.run_once()
+
+
+def test_reversal_confirmation_zero_is_immediate_like_before():
+    runner = _make_runner(_make_candles([100.0] * 10), signal_reversal_confirmation_candles=0)
+    runner.strategy = FakeStrategy(["sell"])
+    _seed_open_trade(runner, side="buy", stop_loss=50.0, take_profit=300.0, trailing_stop=50.0)  # bounds outside the flat 100.0 test candles
+
+    _advance_poll(runner, 1)
+
+    assert runner.store.list_open_trades() == []
+    assert runner.store.list_recent_trade_history(limit=1)[0].exit_reason == "signal_reversal"
+
+
+def test_reversal_confirmation_one_candle_waits_then_executes():
+    runner = _make_runner(_make_candles([100.0] * 10), signal_reversal_confirmation_candles=1)
+    runner.strategy = FakeStrategy(["sell", "sell"])
+    _seed_open_trade(runner, side="buy", stop_loss=50.0, take_profit=300.0, trailing_stop=50.0)  # bounds outside the flat 100.0 test candles
+
+    _advance_poll(runner, 1)
+    assert runner.store.list_open_trades() != [], "must not reverse on the first appearance"
+    assert runner._pending_reversal_side == "sell"
+    assert runner._pending_reversal_streak == 1
+
+    _advance_poll(runner, 2)
+    assert runner.store.list_open_trades() == [], "confirmed on the 2nd consecutive candle"
+    assert runner.store.list_recent_trade_history(limit=1)[0].exit_reason == "signal_reversal"
+    assert runner._pending_reversal_side is None
+    assert runner._pending_reversal_streak == 0
+
+
+def test_reversal_confirmation_two_candles_rev2c_requires_three_total():
+    runner = _make_runner(_make_candles([100.0] * 10), signal_reversal_confirmation_candles=2)
+    runner.strategy = FakeStrategy(["sell", "sell", "sell"])
+    _seed_open_trade(runner, side="buy", stop_loss=50.0, take_profit=300.0, trailing_stop=50.0)  # bounds outside the flat 100.0 test candles
+
+    _advance_poll(runner, 1)
+    assert runner.store.list_open_trades() != []
+    _advance_poll(runner, 2)
+    assert runner.store.list_open_trades() != [], "still not confirmed after only 2 of 3"
+    assert runner._pending_reversal_streak == 2
+    _advance_poll(runner, 3)
+    assert runner.store.list_open_trades() == [], "confirmed on the 3rd consecutive candle"
+
+
+def test_reversal_confirmation_streak_resets_when_signal_disappears():
+    runner = _make_runner(_make_candles([100.0] * 10), signal_reversal_confirmation_candles=2)
+    runner.strategy = FakeStrategy(["sell", None, "sell", "sell", "sell"])
+    _seed_open_trade(runner, side="buy", stop_loss=50.0, take_profit=300.0, trailing_stop=50.0)  # bounds outside the flat 100.0 test candles
+
+    _advance_poll(runner, 1)  # sell, streak=1
+    assert runner._pending_reversal_streak == 1
+    _advance_poll(runner, 2)  # no signal -- resets
+    assert runner._pending_reversal_side is None
+    assert runner._pending_reversal_streak == 0
+    assert runner.store.list_open_trades() != []
+
+    # must take a fresh 3-candle streak from here, not resume the old one
+    _advance_poll(runner, 3)
+    _advance_poll(runner, 4)
+    assert runner.store.list_open_trades() != [], "only 2 of 3 since the reset"
+    _advance_poll(runner, 5)
+    assert runner.store.list_open_trades() == []
+
+
+def test_reversal_confirmation_streak_resets_when_original_side_reappears():
+    runner = _make_runner(_make_candles([100.0] * 10), signal_reversal_confirmation_candles=1)
+    runner.strategy = FakeStrategy(["sell", "buy", "sell", "sell"])
+    _seed_open_trade(runner, side="buy", stop_loss=50.0, take_profit=300.0, trailing_stop=50.0)  # bounds outside the flat 100.0 test candles
+
+    _advance_poll(runner, 1)  # sell, streak=1 toward reversing
+    assert runner._pending_reversal_streak == 1
+    _advance_poll(runner, 2)  # signal agrees with current side again -- pending reversal is moot
+    assert runner._pending_reversal_side is None
+    assert runner.store.list_open_trades() != []
+
+    _advance_poll(runner, 3)  # sell again -- this is a FRESH streak, not a continuation
+    assert runner._pending_reversal_streak == 1
+    assert runner.store.list_open_trades() != []
+    _advance_poll(runner, 4)
+    assert runner.store.list_open_trades() == [], "confirmed on the 2nd candle of the NEW streak"
+
+
+def test_reversal_confirmation_state_persists_across_restart():
+    db_path_holder = {}
+
+    def make_store():
+        store = StateStore(":memory:")
+        db_path_holder["store"] = store
+        return store
+
+    runner = _make_runner(
+        _make_candles([100.0] * 10),
+        signal_reversal_confirmation_candles=2,
+        store=make_store(),
+    )
+    runner.strategy = FakeStrategy(["sell"])
+    _seed_open_trade(runner, side="buy", stop_loss=50.0, take_profit=300.0, trailing_stop=50.0)  # bounds outside the flat 100.0 test candles
+    _advance_poll(runner, 1)
+    assert runner._pending_reversal_streak == 1
+    runner._save_risk_state()
+
+    # Simulate a process restart: a NEW LiveRunner sharing the same (in this test, same-object)
+    # store, restoring state the way run_forever() -> _restore_state() would on boot.
+    restored = _make_runner(
+        _make_candles([100.0] * 10),
+        signal_reversal_confirmation_candles=2,
+        store=db_path_holder["store"],
+    )
+    restored._restore_state()
+
+    assert restored._pending_reversal_side == "sell"
+    assert restored._pending_reversal_streak == 1
 
 
 def test_close_orders_are_placed_reduce_only():

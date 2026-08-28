@@ -103,6 +103,13 @@ class LiveConfigData:
     summary_interval_seconds: int = 3600
     command_poll_interval_seconds: int = 5
     taker_fee_pct: float = 0.0005
+    # How many consecutive closed candles a qualifying opposite-side signal must persist
+    # before a signal_reversal close executes: 0 = immediate (the original behavior), 1/2/3 =
+    # require that many additional confirming candles after the first appearance (REV-1C/2C/3C
+    # in research/reversal_experiments/). Backed by forensic + backtested evidence that most
+    # <2-hour reversals were noise while >2-hour ones were usually genuine -- see
+    # research/reversal_experiments/final_recommendation.md.
+    signal_reversal_confirmation_candles: int = 0
 
 
 @dataclass

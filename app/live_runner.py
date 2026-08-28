@@ -116,6 +116,7 @@ class LiveRunner:
         kill_switch_file_path: str = "KILL_SWITCH",
         taker_fee_pct: float = 0.0005,
         heartbeat_file_path: str = "HEARTBEAT",
+        signal_reversal_confirmation_candles: int = 0,
     ):
         self._fx_rate_provider = fx_rate_provider or get_usd_inr_rate
         self.symbol = symbol
@@ -137,6 +138,11 @@ class LiveRunner:
         self.kill_switch_file_path = kill_switch_file_path
         self.taker_fee_pct = taker_fee_pct
         self.heartbeat_file_path = heartbeat_file_path
+        self.signal_reversal_confirmation_candles = signal_reversal_confirmation_candles
+        # Tracks a persisting opposite-side signal across polls before a reversal executes --
+        # 0/None means "no opposite signal currently being confirmed". See run_once().
+        self._pending_reversal_side: Optional[str] = None
+        self._pending_reversal_streak: int = 0
 
         self.data_feed = data_feed or BinanceDataFeed()
         self.order_executor = order_executor or SimulatedOrderExecutor()
@@ -306,6 +312,8 @@ class LiveRunner:
             self.risk_manager.equity = state["equity"]
         if state.get("peak_equity") is not None:
             self.risk_manager.peak_equity = state["peak_equity"]
+        self._pending_reversal_side = state.get("pending_reversal_side")
+        self._pending_reversal_streak = state.get("pending_reversal_streak") or 0
 
         # If capital (or, under compounding, equity) was lowered while trades opened
         # under a larger reference were still open, the persisted allocation can
@@ -337,6 +345,8 @@ class LiveRunner:
             winning_trades=self.winning_trades,
             losing_trades=self.losing_trades,
             cumulative_funding_paid=self.cumulative_funding_paid,
+            pending_reversal_side=self._pending_reversal_side,
+            pending_reversal_streak=self._pending_reversal_streak,
         )
 
     def _get_current_price(self, fallback_price: float) -> float:
@@ -592,6 +602,15 @@ class LiveRunner:
                 handle.write(str(time.time()))
         except OSError as exc:
             self._log(f"Failed to write heartbeat file: {exc}")
+
+    def _reset_pending_reversal(self) -> None:
+        """Clears any in-progress reversal-confirmation streak. Called whenever the current
+        poll's signal is anything other than "still confirming the same opposite side" -- no
+        signal, a long_only-skipped signal, or a signal that now agrees with (or no longer
+        opposes) the open position -- so a streak can never carry over past the moment the
+        opposite signal actually stops persisting."""
+        self._pending_reversal_side = None
+        self._pending_reversal_streak = 0
 
     def _maybe_roll_day(self) -> None:
         today = datetime.now(timezone.utc).date().isoformat()
@@ -958,6 +977,12 @@ class LiveRunner:
     def _status_message(self, prefix: str = "\U0001F4CA Status") -> str:
         open_trades = self.store.list_open_trades()
         win_rate = (self.winning_trades / self.closed_trades * 100) if self.closed_trades else 0.0
+        pending_reversal_line = ""
+        if self._pending_reversal_side and self.signal_reversal_confirmation_candles > 0:
+            pending_reversal_line = (
+                f"\nReversal to {self._pending_reversal_side} pending confirmation: "
+                f"{self._pending_reversal_streak}/{self.signal_reversal_confirmation_candles + 1}"
+            )
         return (
             f"{prefix}\n"
             f"Symbol: {self.symbol}\n"
@@ -972,6 +997,7 @@ class LiveRunner:
             f"Cooldown remaining: {self.risk_manager.cooldown_remaining} ticks\n"
             f"Drawdown from peak: {self._current_drawdown_pct():.1%} of {self.risk_manager.config.max_drawdown_pct:.0%} limit"
             f"{' 🧊 HALTED' if self.risk_manager.is_drawdown_halted() else ''}"
+            f"{pending_reversal_line}"
             f"{self._futures_status_lines()}"
         )
 
@@ -1141,20 +1167,41 @@ class LiveRunner:
         signal = self.strategy.generate_signal(prices, self.symbol)
         if signal is None:
             self._log("No trading signal generated")
+            self._reset_pending_reversal()
             return
 
         if self.long_only and signal.side == "sell":
             self._log("Sell signal skipped: long_only is enabled (spot can't short)")
+            self._reset_pending_reversal()
             return
 
         if self.risk_manager.current_side and signal.side != self.risk_manager.current_side:
+            if signal.side == self._pending_reversal_side:
+                self._pending_reversal_streak += 1
+            else:
+                self._pending_reversal_side = signal.side
+                self._pending_reversal_streak = 1
+
+            required_streak = self.signal_reversal_confirmation_candles + 1
+            if self._pending_reversal_streak < required_streak:
+                self._log(
+                    f"Opposite signal ({signal.side}) while {self.risk_manager.current_side} is open "
+                    f"-- awaiting confirmation ({self._pending_reversal_streak}/{required_streak})"
+                )
+                return  # holding the current position; next poll re-checks the streak
+
             self._log(
-                f"Opposite signal ({signal.side}) while {self.risk_manager.current_side} is open "
-                "-- closing first, no naked reverse"
+                f"Opposite signal ({signal.side}) confirmed after {self._pending_reversal_streak} "
+                f"candle(s) while {self.risk_manager.current_side} is open -- closing first, no naked reverse"
             )
+            self._reset_pending_reversal()
             for trade in self.store.list_open_trades():
                 self._close_trade(trade, exit_price, "signal_reversal")
             return  # next poll re-evaluates and may open the new side fresh, fully risk-checked
+
+        # signal agrees with the currently open side (or no position is open) -- any reversal
+        # that was pending confirmation is moot now.
+        self._reset_pending_reversal()
 
         if self.risk_manager.open_positions >= self.risk_manager.config.max_open_positions:
             return

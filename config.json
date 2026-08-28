@@ -81,7 +81,8 @@
     "long_only": false,
     "summary_interval_seconds": 3600,
     "command_poll_interval_seconds": 5,
-    "taker_fee_pct": 0.0005
+    "taker_fee_pct": 0.0005,
+    "signal_reversal_confirmation_candles": 2
   },
   "symbol": "SOL/USDT",
   "csv_path": "historical.csv",

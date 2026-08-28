@@ -16,7 +16,10 @@ def test_risk_state_round_trip():
     manager.peak_equity = 51000.0
     manager.drawdown_halt_remaining = 1500
 
-    store.save_risk_state(manager, current_day="2026-07-23", cumulative_funding_paid=-3.5)
+    store.save_risk_state(
+        manager, current_day="2026-07-23", cumulative_funding_paid=-3.5,
+        pending_reversal_side="sell", pending_reversal_streak=2,
+    )
     state = store.load_risk_state()
 
     assert state["daily_loss"] == 120.0
@@ -31,6 +34,19 @@ def test_risk_state_round_trip():
     assert state["peak_equity"] == 51000.0
     assert state["cumulative_funding_paid"] == -3.5
     assert state["drawdown_halt_remaining"] == 1500
+    assert state["pending_reversal_side"] == "sell"
+    assert state["pending_reversal_streak"] == 2
+
+
+def test_risk_state_pending_reversal_defaults_when_not_pending():
+    store = StateStore(":memory:")
+    manager = RiskManager(RiskConfig(capital=50000))
+
+    store.save_risk_state(manager, current_day="2026-07-23")
+    state = store.load_risk_state()
+
+    assert state["pending_reversal_side"] is None
+    assert state["pending_reversal_streak"] == 0
 
 
 def test_risk_state_upsert_overwrites_previous_row():
