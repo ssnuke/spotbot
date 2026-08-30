@@ -190,7 +190,17 @@ class LiveRunner:
         futures order responses have a different shape than spot's (see _extract_futures_fill)
         and silently fall back to a wrong price and a hardcoded zero fee if parsed the spot way."""
         if self.futures_client is not None:
-            return _extract_futures_fill(order, fallback_price, fallback_quantity, self.taker_fee_pct)
+            price, qty, fee = _extract_futures_fill(order, fallback_price, fallback_quantity, self.taker_fee_pct)
+            if fee == 0.0:
+                # Diagnostic for the still-unexplained $0.00-fee reports: two prior fixes to
+                # this extraction path (the futures-shaped parser itself, then explicitly
+                # requesting newOrderRespType=RESULT) did not resolve it in production, which
+                # means avgPrice/executedQty are still coming back missing or zero on the real
+                # account for reasons not yet confirmed from an actual raw response. Logging
+                # the full raw order dict here -- instead of guessing a third fix -- so the
+                # next occurrence shows exactly what Binance actually sent back.
+                self._log(f"Futures fill extraction produced zero fee -- raw order response: {order!r}")
+            return price, qty, fee
         return _extract_fill(order, fallback_price, fallback_quantity)
 
     def _refresh_symbol_filters(self) -> bool:
