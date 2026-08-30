@@ -154,6 +154,16 @@ class BinanceFuturesClient:
         close_side = "SELL" if position_side.lower() == "buy" else "BUY"
         return self.place_market_order(symbol, close_side, quantity, reduce_only=True)
 
+    def get_order_trades(self, symbol: str, order_id) -> list:
+        """The actual fills for one order -- real price, qty, and commission per fill. This is
+        the one authoritative source: the order-placement response (even with
+        newOrderRespType=RESULT) has been observed in production to omit avgPrice/cumQuote
+        entirely on this account, and futures commission is never included in that response at
+        all, regardless of response type -- Binance only ever reports it here or via /income."""
+        params = {"symbol": symbol.upper().replace("/", ""), "orderId": order_id}
+        payload = self._signed_request("GET", "/fapi/v1/userTrades", params)
+        return payload if isinstance(payload, list) else []
+
     def get_funding_payments(self, symbol: str, start_time_ms: int) -> list:
         params = {
             "symbol": symbol.upper().replace("/", ""),

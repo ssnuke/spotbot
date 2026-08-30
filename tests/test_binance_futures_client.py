@@ -96,6 +96,24 @@ def test_get_symbol_filters_does_not_rely_on_server_side_symbol_filtering():
     assert mock_get.call_args.kwargs.get("params") is None
 
 
+def test_get_order_trades_requests_user_trades_endpoint():
+    client = _make_client()
+    with patch.object(client, "_signed_request", return_value=[{"qty": "0.5", "price": "100.0"}]) as mock_request:
+        trades = client.get_order_trades("SOL/USDT", 12345)
+
+    method, path, params = mock_request.call_args[0]
+    assert method == "GET"
+    assert path == "/fapi/v1/userTrades"
+    assert params == {"symbol": "SOLUSDT", "orderId": 12345}
+    assert trades == [{"qty": "0.5", "price": "100.0"}]
+
+
+def test_get_order_trades_returns_empty_list_for_non_list_response():
+    client = _make_client()
+    with patch.object(client, "_signed_request", return_value={}):
+        assert client.get_order_trades("SOL/USDT", 12345) == []
+
+
 def test_get_wallet_balance_reads_total_wallet_balance():
     client = _make_client()
     account_info = {"totalWalletBalance": "127.6543", "totalUnrealizedProfit": "9.99"}

@@ -34,6 +34,7 @@ class FakeFuturesClient:
         fail_leverage=False,
         wallet_balance=None,
         realized_pnl_income=None,
+        order_trades=None,
     ):
         self.mark_price = mark_price
         self.position_risk = position_risk
@@ -43,9 +44,18 @@ class FakeFuturesClient:
         self.fail_leverage = fail_leverage
         self.wallet_balance = wallet_balance
         self.realized_pnl_income = realized_pnl_income
+        # None -> real trades unavailable by default in most tests, matching the shape of
+        # place_market_order's spot-style "fills" response below, which _extract_futures_fill
+        # falls through to when trades is empty.
+        self.order_trades = order_trades if order_trades is not None else []
+        self.order_trades_calls = []
         self.cancel_all_calls = 0
         self.set_leverage_calls = []
         self.set_margin_type_calls = []
+
+    def get_order_trades(self, symbol, order_id):
+        self.order_trades_calls.append((symbol, order_id))
+        return self.order_trades
 
     def get_wallet_balance(self):
         if self.wallet_balance is None:
@@ -1291,23 +1301,42 @@ class _RaisingFundingFuturesClient(FakeFuturesClient):
         raise RuntimeError("income endpoint unreachable")
 
 
-def test_extract_futures_fill_uses_real_avg_price_and_estimates_fee():
-    # Regression test: real Binance futures order responses have no "fills" array with
-    # commission the way spot's do -- they report avgPrice/executedQty directly. Falling
-    # through to the spot-shaped parser (which just returns the FALLBACK reference price and
-    # a hardcoded zero fee when "fills" is empty) silently hid slippage and every trade's real
-    # fee for every live futures trade.
+def test_extract_futures_fill_prefers_real_trades_over_order_response():
+    # Regression test: a captured production raw order response (status FILLED, executedQty
+    # populated) had NO avgPrice/cumQuote at all, even with newOrderRespType=RESULT -- so this
+    # must not depend on the order-placement response for price/fee. GET /fapi/v1/userTrades is
+    # the authoritative source: real per-fill price, qty, and REAL commission (not an estimate).
+    order = {"orderId": 1, "status": "FILLED", "executedQty": "0.65"}
+    trades = [
+        {"qty": "0.40", "price": "101.20", "commission": "0.0202"},
+        {"qty": "0.25", "price": "101.30", "commission": "0.0127"},
+    ]
+    price, qty, fee = _extract_futures_fill(
+        order, trades, fallback_price=100.0, fallback_quantity=0.65, taker_fee_pct=0.0005
+    )
+    assert qty == pytest.approx(0.65)
+    assert price == pytest.approx((0.40 * 101.20 + 0.25 * 101.30) / 0.65)
+    assert fee == pytest.approx(0.0202 + 0.0127)  # the REAL commission, not a taker-rate estimate
+
+
+def test_extract_futures_fill_falls_back_to_avg_price_when_no_trades():
+    # If userTrades comes back empty (e.g. a transient fetch failure), fall back to
+    # avgPrice/executedQty on the order response, estimating the fee at the taker rate.
     order = {"orderId": 1, "status": "FILLED", "avgPrice": "101.2300", "executedQty": "0.65", "origQty": "0.65"}
-    price, qty, fee = _extract_futures_fill(order, fallback_price=100.0, fallback_quantity=0.65, taker_fee_pct=0.0005)
+    price, qty, fee = _extract_futures_fill(
+        order, [], fallback_price=100.0, fallback_quantity=0.65, taker_fee_pct=0.0005
+    )
     assert price == pytest.approx(101.23)  # the REAL fill price, not the fallback reference price
     assert qty == pytest.approx(0.65)
     assert fee == pytest.approx(0.65 * 101.23 * 0.0005)
     assert fee > 0
 
 
-def test_extract_futures_fill_falls_back_when_avg_price_missing():
+def test_extract_futures_fill_falls_back_to_reference_price_when_nothing_available():
     order = {"orderId": 1, "status": "FILLED"}
-    price, qty, fee = _extract_futures_fill(order, fallback_price=100.0, fallback_quantity=0.65, taker_fee_pct=0.0005)
+    price, qty, fee = _extract_futures_fill(
+        order, [], fallback_price=100.0, fallback_quantity=0.65, taker_fee_pct=0.0005
+    )
     assert price == 100.0
     assert qty == 0.65
     assert fee == 0.0
@@ -1342,6 +1371,39 @@ def test_open_position_in_futures_mode_uses_real_fill_price_and_nonzero_fee():
     open_trade = runner.store.list_open_trades()[0]
     assert open_trade.entry_execution_price == pytest.approx(131.75)  # real avgPrice, not the candle-close reference
     assert open_trade.total_fees > 0  # estimated from the real executed notional, not hardcoded to zero
+
+
+class _AckShapedFuturesOrderExecutor:
+    """Returns order responses shaped like the REAL production order response captured via the
+    diagnostic log: status FILLED, executedQty populated, but no avgPrice/cumQuote at all --
+    even though the client requests newOrderRespType=RESULT. Real Binance behavior, not a test
+    artifact: this is what forced the move from parsing the order response to querying
+    /fapi/v1/userTrades directly."""
+
+    def __init__(self, order_id="ACK-SHAPED"):
+        self.order_id = order_id
+
+    def place_order(self, symbol, side, quantity, reference_price, reduce_only=False):
+        return {"orderId": self.order_id, "status": "FILLED", "executedQty": str(quantity), "origQty": str(quantity)}
+
+
+def test_open_position_fetches_real_fill_via_user_trades_when_order_response_lacks_avg_price():
+    closes = [100.0 + i * 0.5 for i in range(60)]
+    executor = _AckShapedFuturesOrderExecutor(order_id=42)
+    futures_client = FakeFuturesClient(
+        order_trades=[{"qty": "0.30", "price": "131.75", "commission": "0.0197"}]
+    )
+    runner = _make_runner(
+        _make_candles(closes), order_executor=executor, futures_client=futures_client, market_type="futures",
+        risk_config=RiskConfig(capital=50000, risk_per_trade_pct=0.005, max_open_positions=3, leverage=2.0),
+    )
+
+    runner.run_once()
+
+    open_trade = runner.store.list_open_trades()[0]
+    assert open_trade.entry_execution_price == pytest.approx(131.75)  # from userTrades, not the missing avgPrice
+    assert open_trade.total_fees == pytest.approx(0.0197)  # the REAL commission, not a taker-rate estimate
+    assert futures_client.order_trades_calls == [(runner.symbol, 42)]
 
 
 def test_close_trade_uses_exchange_blended_entry_price_not_tracked_entry():

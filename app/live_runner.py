@@ -56,18 +56,28 @@ def _extract_fill(order: dict, fallback_price: float, fallback_quantity: float =
 
 
 def _extract_futures_fill(
-    order: dict, fallback_price: float, fallback_quantity: float, taker_fee_pct: float
+    order: dict, trades: list, fallback_price: float, fallback_quantity: float, taker_fee_pct: float
 ) -> tuple[float, float, float]:
-    """Returns (fill_price, filled_quantity, total_fee) for a FUTURES order response.
+    """Returns (fill_price, filled_quantity, total_fee) for a FUTURES order.
 
-    Unlike spot, Binance's futures order response never includes a "fills" array with
-    per-fill commission -- it reports the real execution directly via avgPrice/executedQty,
-    with actual fees only available from separate endpoints (userTrades/income), not here.
-    Falling through to `_extract_fill` for a futures order means `order.get("fills")` is
-    always empty, silently returning the FALLBACK reference price (not the real fill price --
-    hiding slippage) and a hardcoded zero fee, for every single live futures trade. This uses
-    the real avgPrice/executedQty when present and estimates the fee from the executed
-    notional at the configured taker rate, since the exact commission isn't available here."""
+    `trades` -- from GET /fapi/v1/userTrades, the authoritative source -- is tried first: real
+    price, quantity, and REAL commission per fill (paid in USDT for USDT-M contracts, so it can
+    be summed directly with no asset conversion). Observed in production to be necessary, not
+    optional: the order-placement response has been seen to omit avgPrice/cumQuote entirely even
+    with newOrderRespType=RESULT, and futures commission is never included in that response at
+    all regardless of response type.
+
+    If `trades` is empty (e.g. the userTrades call itself failed), falls back to avgPrice/
+    executedQty on the order response if present, estimating the fee from the executed notional
+    at the configured taker rate since exact commission isn't available there. If even that is
+    missing, falls through to `_extract_fill`, which returns the FALLBACK reference price (not
+    the real fill price -- hides slippage) and a hardcoded zero fee."""
+    if trades:
+        total_qty = sum(float(t["qty"]) for t in trades)
+        if total_qty > 0:
+            total_cost = sum(float(t["qty"]) * float(t["price"]) for t in trades)
+            total_fee = sum(float(t.get("commission", 0.0)) for t in trades)
+            return total_cost / total_qty, total_qty, total_fee
     avg_price = order.get("avgPrice")
     executed_qty = order.get("executedQty")
     if avg_price is None or executed_qty is None:
@@ -190,16 +200,20 @@ class LiveRunner:
         futures order responses have a different shape than spot's (see _extract_futures_fill)
         and silently fall back to a wrong price and a hardcoded zero fee if parsed the spot way."""
         if self.futures_client is not None:
-            price, qty, fee = _extract_futures_fill(order, fallback_price, fallback_quantity, self.taker_fee_pct)
+            trades = []
+            order_id = order.get("orderId")
+            if order_id is not None:
+                try:
+                    trades = self.futures_client.get_order_trades(self.symbol, order_id)
+                except Exception as exc:
+                    self._log(f"Failed to fetch real fills for order {order_id}: {exc}")
+            price, qty, fee = _extract_futures_fill(order, trades, fallback_price, fallback_quantity, self.taker_fee_pct)
             if fee == 0.0:
-                # Diagnostic for the still-unexplained $0.00-fee reports: two prior fixes to
-                # this extraction path (the futures-shaped parser itself, then explicitly
-                # requesting newOrderRespType=RESULT) did not resolve it in production, which
-                # means avgPrice/executedQty are still coming back missing or zero on the real
-                # account for reasons not yet confirmed from an actual raw response. Logging
-                # the full raw order dict here -- instead of guessing a third fix -- so the
-                # next occurrence shows exactly what Binance actually sent back.
-                self._log(f"Futures fill extraction produced zero fee -- raw order response: {order!r}")
+                # Diagnosed from a captured raw response: the order-placement response omits
+                # avgPrice/cumQuote entirely on this account even with newOrderRespType=RESULT,
+                # so this now fetches real fills via userTrades above. Kept as a tripwire in
+                # case that also comes back empty (e.g. a transient API failure).
+                self._log(f"Futures fill extraction produced zero fee -- raw order response: {order!r}, trades: {trades!r}")
             return price, qty, fee
         return _extract_fill(order, fallback_price, fallback_quantity)
 
