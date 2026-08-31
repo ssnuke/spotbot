@@ -314,6 +314,34 @@ class StateStore:
         self.conn.commit()
         return cur.lastrowid
 
+    def list_trade_history_since(self, since_iso: str) -> List[ClosedTradeRecord]:
+        """All closed trades with closed_at >= since_iso, oldest first -- read-only, used by the
+        regime health monitor (app/regime_monitor.py) to compute rolling-window statistics over
+        real live trade history. Adds no new table/column and changes no existing behavior."""
+        cur = self.conn.execute(
+            "SELECT * FROM trade_history WHERE closed_at >= ? ORDER BY closed_at ASC", (since_iso,)
+        )
+        columns = [d[0] for d in cur.description]
+        records = []
+        for row in cur.fetchall():
+            data = dict(zip(columns, row))
+            records.append(
+                ClosedTradeRecord(
+                    id=data["id"],
+                    symbol=data["symbol"],
+                    side=data["side"],
+                    entry_price=data["entry_price"],
+                    exit_price=data["exit_price"],
+                    quantity=data["quantity"],
+                    pnl=data["pnl"],
+                    exit_reason=data["exit_reason"],
+                    opened_at=data["opened_at"],
+                    closed_at=data["closed_at"],
+                    fees=data.get("fees") or 0.0,
+                )
+            )
+        return records
+
     def list_recent_trade_history(self, limit: int = 5) -> List[ClosedTradeRecord]:
         cur = self.conn.execute(
             "SELECT * FROM trade_history ORDER BY id DESC LIMIT ?", (limit,)

@@ -1,0 +1,37 @@
+{
+  "weights": {
+    "pf_weight": 0.55,
+    "reversal_weight": 0.45
+  },
+  "reference_dataset": "calibration_windows.csv (non-overlapping 30d, min_trades filtered)",
+  "score_distribution_calibration": {
+    "p05": 16.55,
+    "p10": 19.39,
+    "p25": 33.03,
+    "p50": 50.14,
+    "p75": 64.55,
+    "p90": 76.82,
+    "p95": 88.74
+  },
+  "band_cutoffs": {
+    "p25": 33.03,
+    "p50": 50.14,
+    "p75": 64.55,
+    "p90": 76.82,
+    "p95": 88.74
+  },
+  "band_counts_calibration": {
+    "HEALTHY": 18,
+    "CAUTION": 18,
+    "NORMAL": 18,
+    "STRESS": 10,
+    "EXTREME_STRESS": 8
+  },
+  "band_share_pct_calibration": {
+    "HEALTHY": 25.0,
+    "CAUTION": 25.0,
+    "NORMAL": 25.0,
+    "STRESS": 13.9,
+    "EXTREME_STRESS": 11.1
+  }
+}

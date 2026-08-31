@@ -1,0 +1,335 @@
+{
+  "calibration_cutoff": "2025-12-31",
+  "calibration_windows_n": 64,
+  "frozen_thresholds": {
+    "p25": 34.28,
+    "p50": 49.14,
+    "p75": 64.61,
+    "p90": 77.55
+  },
+  "validation_windows_n": 242,
+  "validation_period": "2026-01-01 to 2026-08-30",
+  "band_counts_validation": {
+    "STRESS": 58,
+    "EXTREME_STRESS": 46,
+    "CAUTION": 65,
+    "NORMAL": 68,
+    "HEALTHY": 5
+  },
+  "band_share_pct_validation": {
+    "STRESS": 24.0,
+    "EXTREME_STRESS": 19.0,
+    "CAUTION": 26.9,
+    "NORMAL": 28.1,
+    "HEALTHY": 2.1
+  },
+  "july_2026_window_bands": [
+    {
+      "date": "2026-07-01",
+      "band": "NORMAL",
+      "score": 34.45
+    },
+    {
+      "date": "2026-07-02",
+      "band": "HEALTHY",
+      "score": 33.05
+    },
+    {
+      "date": "2026-07-03",
+      "band": "HEALTHY",
+      "score": 33.05
+    },
+    {
+      "date": "2026-07-04",
+      "band": "HEALTHY",
+      "score": 32.34
+    },
+    {
+      "date": "2026-07-05",
+      "band": "HEALTHY",
+      "score": 33.75
+    },
+    {
+      "date": "2026-07-06",
+      "band": "NORMAL",
+      "score": 35.16
+    },
+    {
+      "date": "2026-07-07",
+      "band": "NORMAL",
+      "score": 35.16
+    },
+    {
+      "date": "2026-07-08",
+      "band": "NORMAL",
+      "score": 36.56
+    },
+    {
+      "date": "2026-07-09",
+      "band": "NORMAL",
+      "score": 36.56
+    },
+    {
+      "date": "2026-07-10",
+      "band": "NORMAL",
+      "score": 36.56
+    },
+    {
+      "date": "2026-07-11",
+      "band": "NORMAL",
+      "score": 35.16
+    },
+    {
+      "date": "2026-07-12",
+      "band": "NORMAL",
+      "score": 35.16
+    },
+    {
+      "date": "2026-07-13",
+      "band": "NORMAL",
+      "score": 36.56
+    },
+    {
+      "date": "2026-07-14",
+      "band": "NORMAL",
+      "score": 36.56
+    },
+    {
+      "date": "2026-07-15",
+      "band": "NORMAL",
+      "score": 38.83
+    },
+    {
+      "date": "2026-07-16",
+      "band": "NORMAL",
+      "score": 41.64
+    },
+    {
+      "date": "2026-07-17",
+      "band": "NORMAL",
+      "score": 40.23
+    },
+    {
+      "date": "2026-07-18",
+      "band": "NORMAL",
+      "score": 38.83
+    },
+    {
+      "date": "2026-07-19",
+      "band": "NORMAL",
+      "score": 39.53
+    },
+    {
+      "date": "2026-07-20",
+      "band": "NORMAL",
+      "score": 40.94
+    },
+    {
+      "date": "2026-07-21",
+      "band": "CAUTION",
+      "score": 51.64
+    },
+    {
+      "date": "2026-07-22",
+      "band": "CAUTION",
+      "score": 50.78
+    },
+    {
+      "date": "2026-07-23",
+      "band": "CAUTION",
+      "score": 49.92
+    },
+    {
+      "date": "2026-07-24",
+      "band": "STRESS",
+      "score": 69.92
+    },
+    {
+      "date": "2026-07-25",
+      "band": "EXTREME_STRESS",
+      "score": 92.27
+    },
+    {
+      "date": "2026-07-26",
+      "band": "EXTREME_STRESS",
+      "score": 87.97
+    },
+    {
+      "date": "2026-07-27",
+      "band": "EXTREME_STRESS",
+      "score": 87.11
+    },
+    {
+      "date": "2026-07-28",
+      "band": "EXTREME_STRESS",
+      "score": 85.39
+    },
+    {
+      "date": "2026-07-29",
+      "band": "EXTREME_STRESS",
+      "score": 87.97
+    },
+    {
+      "date": "2026-07-30",
+      "band": "EXTREME_STRESS",
+      "score": 89.69
+    },
+    {
+      "date": "2026-07-31",
+      "band": "EXTREME_STRESS",
+      "score": 97.42
+    },
+    {
+      "date": "2026-08-01",
+      "band": "EXTREME_STRESS",
+      "score": 97.42
+    },
+    {
+      "date": "2026-08-02",
+      "band": "EXTREME_STRESS",
+      "score": 92.27
+    },
+    {
+      "date": "2026-08-03",
+      "band": "EXTREME_STRESS",
+      "score": 92.27
+    },
+    {
+      "date": "2026-08-04",
+      "band": "EXTREME_STRESS",
+      "score": 87.97
+    },
+    {
+      "date": "2026-08-05",
+      "band": "EXTREME_STRESS",
+      "score": 87.97
+    },
+    {
+      "date": "2026-08-06",
+      "band": "EXTREME_STRESS",
+      "score": 89.69
+    },
+    {
+      "date": "2026-08-07",
+      "band": "EXTREME_STRESS",
+      "score": 92.27
+    },
+    {
+      "date": "2026-08-08",
+      "band": "EXTREME_STRESS",
+      "score": 92.27
+    },
+    {
+      "date": "2026-08-09",
+      "band": "STRESS",
+      "score": 76.8
+    },
+    {
+      "date": "2026-08-10",
+      "band": "STRESS",
+      "score": 72.5
+    }
+  ],
+  "august_recovery_window_bands": [
+    {
+      "date": "2026-08-11",
+      "band": "STRESS",
+      "score": 71.64
+    },
+    {
+      "date": "2026-08-12",
+      "band": "STRESS",
+      "score": 73.36
+    },
+    {
+      "date": "2026-08-13",
+      "band": "STRESS",
+      "score": 70.78
+    },
+    {
+      "date": "2026-08-14",
+      "band": "STRESS",
+      "score": 65.62
+    },
+    {
+      "date": "2026-08-15",
+      "band": "STRESS",
+      "score": 65.62
+    },
+    {
+      "date": "2026-08-16",
+      "band": "STRESS",
+      "score": 65.62
+    },
+    {
+      "date": "2026-08-17",
+      "band": "CAUTION",
+      "score": 60.47
+    },
+    {
+      "date": "2026-08-18",
+      "band": "CAUTION",
+      "score": 57.89
+    },
+    {
+      "date": "2026-08-19",
+      "band": "CAUTION",
+      "score": 61.33
+    },
+    {
+      "date": "2026-08-20",
+      "band": "NORMAL",
+      "score": 45.47
+    },
+    {
+      "date": "2026-08-21",
+      "band": "NORMAL",
+      "score": 48.05
+    },
+    {
+      "date": "2026-08-22",
+      "band": "NORMAL",
+      "score": 48.2
+    },
+    {
+      "date": "2026-08-23",
+      "band": "CAUTION",
+      "score": 49.92
+    },
+    {
+      "date": "2026-08-24",
+      "band": "NORMAL",
+      "score": 48.2
+    },
+    {
+      "date": "2026-08-25",
+      "band": "NORMAL",
+      "score": 45.08
+    },
+    {
+      "date": "2026-08-26",
+      "band": "NORMAL",
+      "score": 37.42
+    },
+    {
+      "date": "2026-08-27",
+      "band": "NORMAL",
+      "score": 37.42
+    },
+    {
+      "date": "2026-08-28",
+      "band": "NORMAL",
+      "score": 37.42
+    },
+    {
+      "date": "2026-08-29",
+      "band": "NORMAL",
+      "score": 36.02
+    },
+    {
+      "date": "2026-08-30",
+      "band": "NORMAL",
+      "score": 37.42
+    }
+  ]
+}

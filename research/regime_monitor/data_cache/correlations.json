@@ -1,0 +1,114 @@
+{
+  "n_windows": 72,
+  "metrics": [
+    "profit_factor",
+    "win_rate",
+    "reversal_exit_share",
+    "expectancy",
+    "reversal_density",
+    "cooldown_rate",
+    "max_drawdown_pct"
+  ],
+  "matrix": [
+    [
+      1.0,
+      0.835,
+      -0.076,
+      0.911,
+      0.016,
+      -0.811,
+      -0.135
+    ],
+    [
+      0.835,
+      1.0,
+      0.164,
+      0.681,
+      0.329,
+      -0.949,
+      -0.245
+    ],
+    [
+      -0.076,
+      0.164,
+      1.0,
+      -0.325,
+      0.955,
+      -0.002,
+      -0.55
+    ],
+    [
+      0.911,
+      0.681,
+      -0.325,
+      1.0,
+      -0.272,
+      -0.703,
+      0.038
+    ],
+    [
+      0.016,
+      0.329,
+      0.955,
+      -0.272,
+      1.0,
+      -0.164,
+      -0.536
+    ],
+    [
+      -0.811,
+      -0.949,
+      -0.002,
+      -0.703,
+      -0.164,
+      1.0,
+      0.193
+    ],
+    [
+      -0.135,
+      -0.245,
+      -0.55,
+      0.038,
+      -0.536,
+      0.193,
+      1.0
+    ]
+  ],
+  "strong_pairs": [
+    {
+      "a": "reversal_exit_share",
+      "b": "reversal_density",
+      "r": 0.955
+    },
+    {
+      "a": "win_rate",
+      "b": "cooldown_rate",
+      "r": -0.949
+    },
+    {
+      "a": "profit_factor",
+      "b": "expectancy",
+      "r": 0.911
+    },
+    {
+      "a": "profit_factor",
+      "b": "win_rate",
+      "r": 0.835
+    },
+    {
+      "a": "profit_factor",
+      "b": "cooldown_rate",
+      "r": -0.811
+    },
+    {
+      "a": "expectancy",
+      "b": "cooldown_rate",
+      "r": -0.703
+    },
+    {
+      "a": "win_rate",
+      "b": "expectancy",
+      "r": 0.681
+    }
+  ]
+}

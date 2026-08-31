@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -632,6 +633,38 @@ def test_price_command_uses_data_feed_latest_price():
     runner._handle_command("/price")
 
     assert notifier.sent == ["BTC/USDT: 12345.67"]
+
+
+def test_regime_command_reports_insufficient_history_with_no_closed_trades():
+    notifier = FakeNotifier()
+    runner = _make_runner(_make_candles([100.0] * 5), notifier=notifier)
+
+    runner._handle_command("/regime")
+
+    assert len(notifier.sent) == 1
+    assert "Not enough live trade history" in notifier.sent[0]
+
+
+def test_regime_command_reports_a_full_snapshot_once_enough_history_exists():
+    notifier = FakeNotifier()
+    runner = _make_runner(_make_candles([100.0] * 5), notifier=notifier)
+    now = datetime.now(timezone.utc)
+    for i in range(60):
+        pnl = 3.0 if i % 2 == 0 else -1.0  # decent win rate/PF -> should not be a stressed read
+        reason = "take_profit" if i % 3 != 0 else "signal_reversal"
+        closed_at = (now - timedelta(hours=2 * (60 - i))).isoformat()
+        runner.store.add_trade_history(ClosedTradeRecord(
+            id=None, symbol="BTC/USDT", side="buy", entry_price=100.0, exit_price=101.0,
+            quantity=1.0, pnl=pnl, exit_reason=reason, opened_at=closed_at, closed_at=closed_at,
+        ))
+
+    runner._handle_command("/regime")
+
+    assert len(notifier.sent) == 1
+    message = notifier.sent[0]
+    assert "REGIME HEALTH" in message.upper()
+    assert "does not change trading behavior" in message
+    assert "Not enough live trade history" not in message
 
 
 def test_openpositions_is_an_alias_for_trades():

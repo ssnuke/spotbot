@@ -1,0 +1,43 @@
+[
+  {
+    "enter_days": 1,
+    "exit_days": 1,
+    "transitions": 110,
+    "note": "raw (no hysteresis)"
+  },
+  {
+    "enter_days": 1,
+    "exit_days": 1,
+    "transitions": 110,
+    "pct_of_raw_transitions": 100.0,
+    "avg_detection_delay_days": 0
+  },
+  {
+    "enter_days": 2,
+    "exit_days": 2,
+    "transitions": 80,
+    "pct_of_raw_transitions": 72.7,
+    "avg_detection_delay_days": 1
+  },
+  {
+    "enter_days": 3,
+    "exit_days": 3,
+    "transitions": 52,
+    "pct_of_raw_transitions": 47.3,
+    "avg_detection_delay_days": 2
+  },
+  {
+    "enter_days": 2,
+    "exit_days": 5,
+    "transitions": 62,
+    "pct_of_raw_transitions": 56.4,
+    "avg_detection_delay_days": 1
+  },
+  {
+    "enter_days": 3,
+    "exit_days": 7,
+    "transitions": 40,
+    "pct_of_raw_transitions": 36.4,
+    "avg_detection_delay_days": 2
+  }
+]

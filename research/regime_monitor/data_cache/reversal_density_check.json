@@ -1,0 +1,7 @@
+{
+  "contemporaneous_r_share_vs_density": 0.955,
+  "forward_r_share_to_next_expectancy": -0.069,
+  "forward_r_density_to_next_expectancy": -0.076,
+  "partial_r_density_vs_next_expectancy_controlling_for_share": -0.034,
+  "conclusion": "Negligible incremental value: reversal_density's forward correlation with next-window expectancy is not stronger than reversal_exit_share's, and the partial correlation (density's link to future expectancy AFTER removing what share already explains) is small. Density is kept as a descriptive/contextual stat on the dashboard, not as a separate scored input."
+}

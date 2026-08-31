@@ -11,6 +11,7 @@ from app.binance_futures_client import BinanceFuturesClient
 from app.data_feed import BinanceDataFeed
 from app.fx import get_usd_inr_rate
 from app.notifications import TelegramNotifier
+from app import regime_monitor
 from app.order_executor import (
     FuturesLiveOrderExecutor,
     FuturesTestnetOrderExecutor,
@@ -33,6 +34,8 @@ HELP_TEXT = (
     "/trades or /openpositions - list currently open trades\n"
     "/history [N] - last N closed trades with entry/exit/reason/pnl (default 5, max 20)\n"
     "/price - current market price\n"
+    "/regime - regime health snapshot vs. REV-2C's own historical behavior (observability only, "
+    "never changes trading behavior)\n"
     "/pause - stop opening new positions (existing ones still managed)\n"
     "/resume - resume opening new positions after a /pause\n"
     "/kill or /stop - shut the bot down remotely (graceful, sends a final summary)\n"
@@ -1131,6 +1134,11 @@ class LiveRunner:
         elif command == "/price":
             price = self.data_feed.get_latest_price(self.symbol)
             self.notifier.send(f"{self.symbol}: {price:.2f}" if price is not None else "Price unavailable right now.")
+        elif command == "/regime":
+            # Observability only: reads closed-trade history and reports a descriptive snapshot.
+            # Never touches RiskManager, order execution, or any trading decision.
+            snapshot = regime_monitor.compute_regime_snapshot(self.store)
+            self.notifier.send(regime_monitor.format_snapshot_message(snapshot))
         elif command == "/pause":
             self._trading_paused = True
             self.notifier.send(

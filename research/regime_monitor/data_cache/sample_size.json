@@ -1,0 +1,77 @@
+{
+  "trade_count_distribution": {
+    "n_windows": 72,
+    "min": 141,
+    "max": 273,
+    "p05": 169,
+    "p10": 186,
+    "p25": 209,
+    "p50": 226,
+    "p75": 238,
+    "p90": 249,
+    "mean": 221.5
+  },
+  "threshold_sweep": [
+    {
+      "min_trades": 0,
+      "windows_kept": 72,
+      "windows_excluded": 0,
+      "pct_excluded": 0.0,
+      "pf_p25": 1.302,
+      "pf_p50": 1.616,
+      "pf_p75": 1.928,
+      "wr_p25": 42.79,
+      "wr_p50": 47.97,
+      "wr_p75": 51.43
+    },
+    {
+      "min_trades": 30,
+      "windows_kept": 72,
+      "windows_excluded": 0,
+      "pct_excluded": 0.0,
+      "pf_p25": 1.302,
+      "pf_p50": 1.616,
+      "pf_p75": 1.928,
+      "wr_p25": 42.79,
+      "wr_p50": 47.97,
+      "wr_p75": 51.43
+    },
+    {
+      "min_trades": 50,
+      "windows_kept": 72,
+      "windows_excluded": 0,
+      "pct_excluded": 0.0,
+      "pf_p25": 1.302,
+      "pf_p50": 1.616,
+      "pf_p75": 1.928,
+      "wr_p25": 42.79,
+      "wr_p50": 47.97,
+      "wr_p75": 51.43
+    },
+    {
+      "min_trades": 75,
+      "windows_kept": 72,
+      "windows_excluded": 0,
+      "pct_excluded": 0.0,
+      "pf_p25": 1.302,
+      "pf_p50": 1.616,
+      "pf_p75": 1.928,
+      "wr_p25": 42.79,
+      "wr_p50": 47.97,
+      "wr_p75": 51.43
+    },
+    {
+      "min_trades": 100,
+      "windows_kept": 72,
+      "windows_excluded": 0,
+      "pct_excluded": 0.0,
+      "pf_p25": 1.302,
+      "pf_p50": 1.616,
+      "pf_p75": 1.928,
+      "wr_p25": 42.79,
+      "wr_p50": 47.97,
+      "wr_p75": 51.43
+    }
+  ],
+  "recommended_min_trades": 100
+}

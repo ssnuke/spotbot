@@ -1,0 +1,9 @@
+{
+  "trade_count": 16190,
+  "data_from": "2020-09-01T00:00:00+00:00",
+  "data_through": "2026-08-30T05:00:00+00:00",
+  "baseline_usd": 1044.932079414838,
+  "window_days": 30,
+  "daily_step_days": 1,
+  "calibration_step_days": 30
+}

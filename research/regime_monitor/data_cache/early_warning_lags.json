@@ -1,0 +1,134 @@
+[
+  {
+    "episode_start": "2021-10-25",
+    "episode_end": "2021-12-13",
+    "days_first_stress_to_peak_dd": 2,
+    "days_first_extreme_to_peak_dd": null
+  },
+  {
+    "episode_start": "2021-12-16",
+    "episode_end": "2022-01-20",
+    "days_first_stress_to_peak_dd": -30,
+    "days_first_extreme_to_peak_dd": null
+  },
+  {
+    "episode_start": "2022-01-28",
+    "episode_end": "2022-02-27",
+    "days_first_stress_to_peak_dd": -3,
+    "days_first_extreme_to_peak_dd": null
+  },
+  {
+    "episode_start": "2022-03-01",
+    "episode_end": "2022-04-01",
+    "days_first_stress_to_peak_dd": -30,
+    "days_first_extreme_to_peak_dd": null
+  },
+  {
+    "episode_start": "2022-08-11",
+    "episode_end": "2022-11-20",
+    "days_first_stress_to_peak_dd": 2,
+    "days_first_extreme_to_peak_dd": -10
+  },
+  {
+    "episode_start": "2022-11-23",
+    "episode_end": "2022-12-24",
+    "days_first_stress_to_peak_dd": -30,
+    "days_first_extreme_to_peak_dd": null
+  },
+  {
+    "episode_start": "2023-01-31",
+    "episode_end": "2023-04-14",
+    "days_first_stress_to_peak_dd": -5,
+    "days_first_extreme_to_peak_dd": -14
+  },
+  {
+    "episode_start": "2023-04-20",
+    "episode_end": "2023-09-07",
+    "days_first_stress_to_peak_dd": 77,
+    "days_first_extreme_to_peak_dd": 72
+  },
+  {
+    "episode_start": "2023-08-31",
+    "episode_end": "2023-10-19",
+    "days_first_stress_to_peak_dd": 29,
+    "days_first_extreme_to_peak_dd": 29
+  },
+  {
+    "episode_start": "2023-11-16",
+    "episode_end": "2023-12-17",
+    "days_first_stress_to_peak_dd": 1,
+    "days_first_extreme_to_peak_dd": null
+  },
+  {
+    "episode_start": "2024-01-24",
+    "episode_end": "2024-02-28",
+    "days_first_stress_to_peak_dd": -22,
+    "days_first_extreme_to_peak_dd": null
+  },
+  {
+    "episode_start": "2024-03-23",
+    "episode_end": "2024-06-17",
+    "days_first_stress_to_peak_dd": 32,
+    "days_first_extreme_to_peak_dd": 30
+  },
+  {
+    "episode_start": "2024-06-06",
+    "episode_end": "2024-08-11",
+    "days_first_stress_to_peak_dd": 0,
+    "days_first_extreme_to_peak_dd": -1
+  },
+  {
+    "episode_start": "2024-08-25",
+    "episode_end": "2024-12-03",
+    "days_first_stress_to_peak_dd": 35,
+    "days_first_extreme_to_peak_dd": 28
+  },
+  {
+    "episode_start": "2025-03-10",
+    "episode_end": "2025-05-09",
+    "days_first_stress_to_peak_dd": 11,
+    "days_first_extreme_to_peak_dd": 7
+  },
+  {
+    "episode_start": "2025-05-24",
+    "episode_end": "2025-06-23",
+    "days_first_stress_to_peak_dd": 0,
+    "days_first_extreme_to_peak_dd": null
+  },
+  {
+    "episode_start": "2025-06-14",
+    "episode_end": "2025-08-08",
+    "days_first_stress_to_peak_dd": 0,
+    "days_first_extreme_to_peak_dd": -24
+  },
+  {
+    "episode_start": "2025-10-09",
+    "episode_end": "2025-11-12",
+    "days_first_stress_to_peak_dd": 4,
+    "days_first_extreme_to_peak_dd": null
+  },
+  {
+    "episode_start": "2025-10-29",
+    "episode_end": "2026-01-29",
+    "days_first_stress_to_peak_dd": 4,
+    "days_first_extreme_to_peak_dd": -38
+  },
+  {
+    "episode_start": "2026-01-26",
+    "episode_end": "2026-03-31",
+    "days_first_stress_to_peak_dd": 27,
+    "days_first_extreme_to_peak_dd": null
+  },
+  {
+    "episode_start": "2026-04-03",
+    "episode_end": "2026-06-17",
+    "days_first_stress_to_peak_dd": 12,
+    "days_first_extreme_to_peak_dd": 7
+  },
+  {
+    "episode_start": "2026-06-24",
+    "episode_end": "2026-08-13",
+    "days_first_stress_to_peak_dd": 0,
+    "days_first_extreme_to_peak_dd": -1
+  }
+]
