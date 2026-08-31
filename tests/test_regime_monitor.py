@@ -14,11 +14,15 @@ class FakeTrade:
 
 
 class FakeStore:
-    def __init__(self, trades):
+    def __init__(self, trades, risk_state=None):
         self.trades = trades
+        self.risk_state = risk_state
 
     def list_trade_history_since(self, since_iso):
         return [t for t in self.trades if t.closed_at >= since_iso]
+
+    def load_risk_state(self):
+        return self.risk_state
 
 
 NOW = datetime(2026, 8, 1, tzinfo=timezone.utc)
@@ -128,20 +132,30 @@ def test_reversal_density_zero_when_no_reversal_exits():
     assert regime_monitor._reversal_density(trades) == 0.0
 
 
-def test_local_drawdown_zero_when_monotonically_winning():
-    trades = [
-        FakeTrade(pnl=1.0, exit_reason="take_profit", closed_at=(NOW - timedelta(hours=h)).isoformat())
-        for h in range(10, 0, -1)
-    ]
-    assert regime_monitor._local_drawdown_pct(trades) == 0.0
+def test_current_drawdown_zero_when_no_risk_state_available():
+    # A store with no risk_state row yet (e.g. a truly fresh account) must not error or return
+    # a nonsensical figure -- it should read as "no drawdown known", not "0% is definitely right".
+    store = FakeStore([], risk_state=None)
+    assert regime_monitor._current_drawdown_pct(store) == 0.0
 
 
-def test_local_drawdown_positive_after_a_pullback_from_peak():
-    times = [NOW - timedelta(hours=h) for h in range(5, 0, -1)]
-    pnls = [2.0, 2.0, -1.0, -1.0, 0.5]  # peaks at 4.0, ends at 2.5 -> drawdown from peak
-    trades = [FakeTrade(pnl=p, exit_reason="take_profit", closed_at=t.isoformat()) for p, t in zip(pnls, times)]
-    dd = regime_monitor._local_drawdown_pct(trades)
-    assert dd == pytest.approx((4.0 - 2.5) / 4.0 * 100)
+def test_current_drawdown_reads_real_equity_not_reconstructed_from_trade_pnl():
+    # Regression test: the real bug this replaced. A young/currently-losing live account can
+    # have cumulative trade PnL go negative relative to a small early peak (e.g. peak +$0.50 from
+    # one early win, now -$3 after a losing streak) -- reconstructing "wealth" from raw trade PnL
+    # starting at 0 produced a nonsensical >100% drawdown in that case. Reading the account's
+    # REAL equity/peak_equity (the same figures RiskManager's own drawdown halt uses) instead
+    # keeps this bounded to a proper 0-100% figure regardless of how the trade history looks.
+    store = FakeStore([], risk_state={"equity": 121.0, "peak_equity": 130.0})
+    dd = regime_monitor._current_drawdown_pct(store)
+    assert dd == pytest.approx((130.0 - 121.0) / 130.0 * 100)
+    assert 0.0 <= dd <= 100.0
+
+
+def test_current_drawdown_is_bounded_even_with_bad_inputs():
+    store = FakeStore([], risk_state={"equity": -5.0, "peak_equity": 0.5})
+    dd = regime_monitor._current_drawdown_pct(store)
+    assert 0.0 <= dd <= 100.0
 
 
 def test_format_message_for_insufficient_history():

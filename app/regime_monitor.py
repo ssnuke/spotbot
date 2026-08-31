@@ -103,19 +103,24 @@ def _reversal_density(trades: list) -> float:
     return sum(counts) / len(counts) if counts else 0.0
 
 
-def _local_drawdown_pct(trades: list) -> float:
-    """How far below its own trailing-30d peak the account sits RIGHT NOW (not the worst
-    drawdown seen at any point within the window -- this is a "current state" figure, so the
-    most recent trade is treated as "now"). Cumulative-PnL path starts at 0, not a real account
-    balance -- context only, never a score input. See Step 20 in the report."""
-    wealth = 0.0
-    peak = 0.0
-    for t in sorted(trades, key=lambda t: t.closed_at):
-        wealth += t.pnl
-        peak = max(peak, wealth)
-    if peak <= 0:
+def _current_drawdown_pct(store) -> float:
+    """How far below its all-time peak the account's REAL equity sits right now -- context only,
+    never a score input (see Step 20 in the report). Deliberately reads the actual persisted
+    `equity`/`peak_equity` from risk_state (the same figures RiskManager's own max_drawdown_pct
+    halt is computed from) rather than reconstructing a "wealth" curve from raw trade PnL
+    starting at 0: on a young or currently-losing account, cumulative PnL can go negative
+    relative to a small early peak (e.g. peak +$0.50 from one early win, now -$3 after a losing
+    streak), which would make a from-zero reconstruction produce a nonsensical >100% figure.
+    Real equity is always anchored to the account's actual starting capital, so this stays a
+    proper 0-100% figure."""
+    state = store.load_risk_state()
+    if not state:
         return 0.0
-    return max(0.0, (peak - wealth) / peak * 100)
+    equity = state.get("equity")
+    peak_equity = state.get("peak_equity")
+    if not equity or not peak_equity or peak_equity <= 0:
+        return 0.0
+    return max(0.0, min(100.0, (peak_equity - equity) / peak_equity * 100))
 
 
 def _stress_score(pf: float, reversal_share: float, calib: dict) -> float:
@@ -270,7 +275,7 @@ def compute_regime_snapshot(store, now: Optional[datetime] = None) -> RegimeSnap
     score = _stress_score(stats["profit_factor"], stats["reversal_exit_share"], calib)
     band = _classify_band(score, calib["band_cutoffs"])
     density = _reversal_density(current_trades)
-    drawdown = _local_drawdown_pct(current_trades)
+    drawdown = _current_drawdown_pct(store)
     ref = calib["reference_distributions"]
 
     # days_back=16 -> series already ends with an entry for "today" (d=0), computed the same way
