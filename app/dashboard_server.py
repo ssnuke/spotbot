@@ -71,30 +71,40 @@ def index():
     return send_from_directory(STATIC_DIR, "index.html")
 
 
-def _trading_pnl_windows(conn) -> dict:
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _trading_pnl_windows(conn, now_utc: datetime | None = None) -> dict:
     """Real trading PnL for today/this week/this month/all time, summed directly from
     trade_history rows -- NOT from risk_state.cumulative_pnl, which can include deposits or
     other balance corrections picked up by the bot's equity-reconciliation logic (it can't tell
     a deposit apart from trading profit, so a manual top-up shows up there as if it were a huge
     winning trade). Individual trade_history rows are never touched by that reconciliation, so
-    summing them directly is unaffected by deposits/withdrawals -- a clean trading-only figure."""
-    now = datetime.now(timezone.utc)
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    week_start = today_start - timedelta(days=today_start.weekday())  # Monday 00:00 UTC
-    month_start = today_start.replace(day=1)
+    summing them directly is unaffected by deposits/withdrawals -- a clean trading-only figure.
 
-    def sum_since(since: datetime) -> float:
+    "Today"/"this week"/"this month" boundaries are IST (UTC+5:30, no DST) even though
+    closed_at is stored in UTC -- each boundary is computed at IST midnight, then converted to
+    its equivalent UTC instant before comparing against the stored UTC strings, since SQLite
+    compares TEXT lexicographically and a bare IST-offset string would not sort correctly
+    against UTC-offset ones."""
+    now_ist = (now_utc or datetime.now(timezone.utc)).astimezone(IST)
+    today_start_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start_ist = today_start_ist - timedelta(days=today_start_ist.weekday())  # Monday 00:00 IST
+    month_start_ist = today_start_ist.replace(day=1)
+
+    def sum_since(since_ist: datetime) -> float:
+        since_utc = since_ist.astimezone(timezone.utc)
         row = conn.execute(
             "SELECT COALESCE(SUM(pnl), 0.0) AS total FROM trade_history WHERE closed_at >= ?",
-            (since.isoformat(),),
+            (since_utc.isoformat(),),
         ).fetchone()
         return row["total"] or 0.0
 
     all_time_row = conn.execute("SELECT COALESCE(SUM(pnl), 0.0) AS total FROM trade_history").fetchone()
     return {
-        "trading_pnl_today": sum_since(today_start),
-        "trading_pnl_week": sum_since(week_start),
-        "trading_pnl_month": sum_since(month_start),
+        "trading_pnl_today": sum_since(today_start_ist),
+        "trading_pnl_week": sum_since(week_start_ist),
+        "trading_pnl_month": sum_since(month_start_ist),
         "trading_pnl_all_time": all_time_row["total"] or 0.0,
     }
 

@@ -169,6 +169,27 @@ def test_summary_trading_pnl_excludes_deposit_polluted_cumulative(monkeypatch, t
     assert body["trading_pnl_all_time"] < 100  # sanity: nowhere near the deposit-polluted figure
 
 
+def test_trading_pnl_today_boundary_uses_ist_not_utc(tmp_path):
+    # "Now" is 2026-09-03 01:00 IST, which is still 2026-09-02 in UTC. IST's "today" started
+    # at 2026-09-03 00:00 IST = 2026-09-02 18:30 UTC. A trade closed at 2026-09-02 19:00 UTC
+    # (after that IST boundary, even though its UTC calendar date is still "Sep 2") must count
+    # as today; one closed at 2026-09-02 17:00 UTC (before the IST boundary) must not.
+    db_path = tmp_path / "live_state.db"
+    _seed_full_db(db_path, [
+        (7.0, "2026-09-02T19:00:00+00:00"),   # after IST midnight -> counts as today (IST)
+        (-2.0, "2026-09-02T17:00:00+00:00"),  # before IST midnight -> still "yesterday" in IST
+    ])
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+
+    now_utc = dashboard_module.datetime(2026, 9, 2, 19, 30, tzinfo=dashboard_module.timezone.utc)
+    windows = dashboard_module._trading_pnl_windows(conn, now_utc=now_utc)
+    conn.close()
+
+    assert windows["trading_pnl_today"] == pytest.approx(7.0)
+    assert windows["trading_pnl_all_time"] == pytest.approx(5.0)
+
+
 def test_export_trades_csv_handles_empty_history(monkeypatch, tmp_path):
     db_path = tmp_path / "live_state.db"
     conn = sqlite3.connect(str(db_path))
