@@ -109,6 +109,46 @@ def _trading_pnl_windows(conn, now_utc: datetime | None = None) -> dict:
     }
 
 
+# Matches heartbeat_watchdog.py's own default HEARTBEAT_MAX_AGE_SECONDS -- past this, the
+# bot is presumed to have stopped polling rather than just being between candles.
+STALE_POLL_THRESHOLD_SECONDS = 900
+
+
+def _compute_bot_activity(risk: dict, open_positions: int, now_utc: datetime | None = None) -> dict:
+    """Derives what the bot is actually doing right now from risk_state's last_poll_at/
+    trading_paused columns (added alongside this feature -- rows written before this deploy,
+    or read before trading-bot.service has restarted to add the columns, have last_poll_at
+    missing/NULL, which reads as maximally stale until the next poll writes one; `.get()`
+    throughout so an un-migrated row degrades to "offline" instead of a 500). "Offline" always
+    wins over position/pause state: a stale bot isn't reliably doing anything, whatever the
+    last-known state said."""
+    now = now_utc or datetime.now(timezone.utc)
+    last_poll_at = risk.get("last_poll_at")
+    poll_age_seconds = None
+    if last_poll_at:
+        try:
+            poll_age_seconds = (now - datetime.fromisoformat(last_poll_at)).total_seconds()
+        except ValueError:
+            poll_age_seconds = None
+
+    stale = poll_age_seconds is None or poll_age_seconds > STALE_POLL_THRESHOLD_SECONDS
+    if stale:
+        status = "offline"
+    elif risk.get("trading_paused"):
+        status = "paused"
+    elif open_positions > 0:
+        status = "in_position"
+    else:
+        status = "scanning"
+
+    return {
+        "bot_status": status,
+        "trading_paused": bool(risk.get("trading_paused")),
+        "last_poll_at": last_poll_at,
+        "poll_age_seconds": poll_age_seconds,
+    }
+
+
 @app.route("/api/summary")
 @require_auth
 def summary():
@@ -122,6 +162,8 @@ def summary():
 
     if risk is None:
         return jsonify({"error": "No risk_state row yet -- bot hasn't run a poll cycle."}), 503
+
+    activity = _compute_bot_activity(dict(risk), open_positions)
 
     equity = risk["equity"] or 0.0
     peak_equity = risk["peak_equity"] or equity
@@ -140,6 +182,7 @@ def summary():
         # Use trading_pnl_* for an honest trading-only figure.
         "cumulative_pnl": risk["cumulative_pnl"] or 0.0,
         **pnl_windows,
+        **activity,
         "closed_trades": closed_trades,
         "winning_trades": winning_trades,
         "losing_trades": risk["losing_trades"] or 0,

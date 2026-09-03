@@ -174,13 +174,13 @@ class LiveRunner:
         self.losing_trades = 0
         self._funding_last_checked_ms = int(time.time() * 1000)
         self._mark_price_divergence_ticks = 0
+        self._stop_requested = False
+        self._trading_paused = False
         self._restore_state()
         if self.futures_client is not None:
             self._revalidate_futures_positions_on_restart()
         self._last_candle_open_time: Optional[int] = None
         self._update_offset: Optional[int] = None
-        self._stop_requested = False
-        self._trading_paused = False
         self._drawdown_halt_notified = False
 
     def _log(self, message: str) -> None:
@@ -374,6 +374,7 @@ class LiveRunner:
             cumulative_funding_paid=self.cumulative_funding_paid,
             pending_reversal_side=self._pending_reversal_side,
             pending_reversal_streak=self._pending_reversal_streak,
+            trading_paused=self._trading_paused,
         )
 
     def _get_current_price(self, fallback_price: float) -> float:

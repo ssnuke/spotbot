@@ -22,6 +22,7 @@
     --accent-wash: rgba(124,58,237,0.07);
     --good: #0ca30c;
     --bad: #d03b3b;
+    --warn: #b6790f;
     --shadow: 0 1px 2px rgba(11,11,11,0.04), 0 8px 24px rgba(11,11,11,0.06);
   }
   @media (prefers-color-scheme: dark) {
@@ -39,6 +40,7 @@
       --accent-wash: rgba(167,139,250,0.10);
       --good: #1fbf1f;
       --bad: #e66767;
+      --warn: #e0a53c;
       --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.4);
     }
   }
@@ -70,6 +72,10 @@
     color: #ffffff;
   }
   .status-pill.stale { background: var(--ink-muted); }
+  .status-pill.bot-scanning { background: transparent; border: 1px solid var(--border); color: var(--ink-secondary); }
+  .status-pill.bot-in_position { background: var(--accent); color: #ffffff; }
+  .status-pill.bot-paused { background: var(--warn); color: #1a1305; }
+  .status-pill.bot-offline { background: var(--bad); color: #ffffff; }
 
   .hero-balance {
     display: flex;
@@ -170,6 +176,7 @@
       <h1 id="symbol-title">SOL/USDT</h1>
     </div>
     <div class="masthead-meta">
+      <span class="status-pill" id="bot-status-pill">—</span>
       <span class="status-pill" id="status-pill">live</span>
     </div>
   </div>
@@ -263,6 +270,20 @@ function fmtDate(iso) {
 function pnlClass(v) {
   return v > 0 ? "good" : v < 0 ? "bad" : "";
 }
+function fmtAge(seconds) {
+  if (seconds === null || seconds === undefined) return "unknown";
+  if (seconds < 90) return Math.round(seconds) + "s ago";
+  const mins = Math.round(seconds / 60);
+  if (mins < 90) return mins + "m ago";
+  return Math.round(mins / 60) + "h ago";
+}
+
+const BOT_STATUS_LABELS = {
+  scanning: "Scanning for signal",
+  in_position: "In position",
+  paused: "Paused",
+  offline: "Offline",
+};
 
 async function fetchJSON(url) {
   const res = await fetch(url);
@@ -277,8 +298,12 @@ function renderSummary(s) {
   document.getElementById("hero-balance").innerHTML = `
     <div class="label">Balance</div>
     <div class="hero-value">${fmtMoney(s.equity)}</div>
-    <div class="hero-meta">peak ${fmtMoney(s.peak_equity)} &middot; ${s.open_positions} open position${s.open_positions === 1 ? "" : "s"}</div>
+    <div class="hero-meta">peak ${fmtMoney(s.peak_equity)} &middot; ${s.open_positions} open position${s.open_positions === 1 ? "" : "s"} &middot; bot last active ${fmtAge(s.poll_age_seconds)}</div>
   `;
+
+  const botPill = document.getElementById("bot-status-pill");
+  botPill.className = "status-pill bot-" + (s.bot_status || "offline");
+  botPill.textContent = BOT_STATUS_LABELS[s.bot_status] || s.bot_status || "Unknown";
 
   const cards = [
     ["Win rate", s.closed_trades ? fmtPct(s.win_rate_pct).replace("+", "") : "—", ""],

@@ -212,6 +212,41 @@ def test_equity_curve_ignores_deposit_polluted_cumulative_pnl(monkeypatch, tmp_p
     assert points[0]["equity"] == pytest.approx(793.37 - sum(p for p, _ in trades))
 
 
+def test_bot_activity_scanning_when_fresh_no_positions_not_paused():
+    now = dashboard_module.datetime(2026, 9, 3, 12, 0, tzinfo=dashboard_module.timezone.utc)
+    risk = {"last_poll_at": "2026-09-03T11:58:00+00:00", "trading_paused": 0}
+    activity = dashboard_module._compute_bot_activity(risk, open_positions=0, now_utc=now)
+    assert activity["bot_status"] == "scanning"
+    assert activity["trading_paused"] is False
+
+
+def test_bot_activity_in_position_when_open_trades_exist():
+    now = dashboard_module.datetime(2026, 9, 3, 12, 0, tzinfo=dashboard_module.timezone.utc)
+    risk = {"last_poll_at": "2026-09-03T11:58:00+00:00", "trading_paused": 0}
+    activity = dashboard_module._compute_bot_activity(risk, open_positions=1, now_utc=now)
+    assert activity["bot_status"] == "in_position"
+
+
+def test_bot_activity_paused_overrides_scanning_but_not_offline():
+    now = dashboard_module.datetime(2026, 9, 3, 12, 0, tzinfo=dashboard_module.timezone.utc)
+    fresh_risk = {"last_poll_at": "2026-09-03T11:58:00+00:00", "trading_paused": 1}
+    assert dashboard_module._compute_bot_activity(fresh_risk, open_positions=0, now_utc=now)["bot_status"] == "paused"
+
+    stale_risk = {"last_poll_at": "2026-09-03T11:00:00+00:00", "trading_paused": 1}  # 1hr old
+    assert dashboard_module._compute_bot_activity(stale_risk, open_positions=0, now_utc=now)["bot_status"] == "offline"
+
+
+def test_bot_activity_offline_when_stale_or_missing_last_poll_at():
+    now = dashboard_module.datetime(2026, 9, 3, 12, 0, tzinfo=dashboard_module.timezone.utc)
+    stale_risk = {"last_poll_at": "2026-09-03T11:00:00+00:00", "trading_paused": 0}  # 1hr old, > 900s
+    assert dashboard_module._compute_bot_activity(stale_risk, open_positions=0, now_utc=now)["bot_status"] == "offline"
+
+    missing_risk = {}  # row from before this feature's migration ran
+    activity = dashboard_module._compute_bot_activity(missing_risk, open_positions=0, now_utc=now)
+    assert activity["bot_status"] == "offline"
+    assert activity["poll_age_seconds"] is None
+
+
 def test_export_trades_csv_handles_empty_history(monkeypatch, tmp_path):
     db_path = tmp_path / "live_state.db"
     conn = sqlite3.connect(str(db_path))

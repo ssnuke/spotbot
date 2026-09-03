@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import List, Optional
 
 
@@ -64,6 +65,7 @@ class StateStore:
         self._ensure_futures_risk_columns()
         self._ensure_drawdown_halt_column()
         self._ensure_reversal_confirmation_columns()
+        self._ensure_activity_columns()
         self.conn.execute(
             """CREATE TABLE IF NOT EXISTS open_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -153,6 +155,17 @@ class StateStore:
                 self.conn.execute(ddl)
         self.conn.commit()
 
+    def _ensure_activity_columns(self) -> None:
+        existing = {row[1] for row in self.conn.execute("PRAGMA table_info(risk_state)")}
+        migrations = {
+            "last_poll_at": "ALTER TABLE risk_state ADD COLUMN last_poll_at TEXT",
+            "trading_paused": "ALTER TABLE risk_state ADD COLUMN trading_paused INTEGER DEFAULT 0",
+        }
+        for column, ddl in migrations.items():
+            if column not in existing:
+                self.conn.execute(ddl)
+        self.conn.commit()
+
     def save_risk_state(
         self,
         risk_manager,
@@ -164,13 +177,15 @@ class StateStore:
         cumulative_funding_paid: float = 0.0,
         pending_reversal_side: Optional[str] = None,
         pending_reversal_streak: int = 0,
+        trading_paused: bool = False,
     ) -> None:
         self.conn.execute(
             """INSERT INTO risk_state (id, daily_loss, daily_trades, open_positions, allocated_capital,
                 consecutive_losses, cooldown_remaining, current_day, cumulative_pnl, closed_trades,
                 winning_trades, losing_trades, equity, peak_equity, allocated_margin, notional_exposure,
-                cumulative_funding_paid, drawdown_halt_remaining, pending_reversal_side, pending_reversal_streak)
-               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                cumulative_funding_paid, drawdown_halt_remaining, pending_reversal_side, pending_reversal_streak,
+                last_poll_at, trading_paused)
+               VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
                 daily_loss=excluded.daily_loss, daily_trades=excluded.daily_trades,
                 open_positions=excluded.open_positions, allocated_capital=excluded.allocated_capital,
@@ -183,7 +198,8 @@ class StateStore:
                 cumulative_funding_paid=excluded.cumulative_funding_paid,
                 drawdown_halt_remaining=excluded.drawdown_halt_remaining,
                 pending_reversal_side=excluded.pending_reversal_side,
-                pending_reversal_streak=excluded.pending_reversal_streak""",
+                pending_reversal_streak=excluded.pending_reversal_streak,
+                last_poll_at=excluded.last_poll_at, trading_paused=excluded.trading_paused""",
             (
                 risk_manager.daily_loss,
                 risk_manager.daily_trades,
@@ -204,6 +220,11 @@ class StateStore:
                 risk_manager.drawdown_halt_remaining,
                 pending_reversal_side,
                 pending_reversal_streak,
+                # Stamped fresh on every save so the dashboard can tell a live bot from one
+                # that's silently stopped polling -- this is the same cadence as the rest of
+                # this row (every poll cycle plus every trade event), not a separate heartbeat.
+                datetime.now(timezone.utc).isoformat(),
+                1 if trading_paused else 0,
             ),
         )
         self.conn.commit()
