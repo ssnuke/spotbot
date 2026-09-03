@@ -140,6 +140,11 @@
   <div class="stat-grid" id="stat-grid"></div>
 
   <section>
+    <h2>Trading PnL <span class="market-last-price">(from closed trades only -- excludes deposits/withdrawals)</span></h2>
+    <div class="stat-grid" id="pnl-grid"></div>
+  </section>
+
+  <section>
     <h2>Live market <span id="market-last-price" class="market-last-price"></span></h2>
     <div class="card">
       <div id="market-chart"></div>
@@ -223,7 +228,6 @@ function renderSummary(s) {
   document.getElementById("symbol-title").textContent = s.symbol + " Dashboard";
   const cards = [
     ["Balance", fmtMoney(s.equity), ""],
-    ["Cumulative PnL", fmtMoney(s.cumulative_pnl), pnlClass(s.cumulative_pnl)],
     ["Win rate", s.closed_trades ? fmtPct(s.win_rate_pct).replace("+", "") : "—", ""],
     ["Closed trades", s.closed_trades, ""],
     ["Max drawdown", fmtPct(-s.drawdown_pct).replace("+", "-").replace("--","-"), s.drawdown_pct > 20 ? "bad" : ""],
@@ -233,6 +237,21 @@ function renderSummary(s) {
   grid.innerHTML = cards.map(([label, value, cls]) =>
     `<div class="stat-card"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`
   ).join("");
+
+  // Trading PnL, summed directly from closed trades -- unaffected by deposits/withdrawals,
+  // unlike Balance above (which is the real account total, deposits included on purpose).
+  const pnlCards = [
+    ["Today", s.trading_pnl_today],
+    ["This week", s.trading_pnl_week],
+    ["This month", s.trading_pnl_month],
+    ["All-time (trading only)", s.trading_pnl_all_time],
+  ];
+  const pnlGrid = document.getElementById("pnl-grid");
+  if (pnlGrid) {
+    pnlGrid.innerHTML = pnlCards.map(([label, value]) =>
+      `<div class="stat-card"><div class="label">${label}</div><div class="value ${pnlClass(value)}">${fmtMoney(value)}</div></div>`
+    ).join("");
+  }
 }
 
 function renderEquityCurve(points) {

@@ -11,6 +11,7 @@ import io
 import os
 import secrets
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 
@@ -70,6 +71,34 @@ def index():
     return send_from_directory(STATIC_DIR, "index.html")
 
 
+def _trading_pnl_windows(conn) -> dict:
+    """Real trading PnL for today/this week/this month/all time, summed directly from
+    trade_history rows -- NOT from risk_state.cumulative_pnl, which can include deposits or
+    other balance corrections picked up by the bot's equity-reconciliation logic (it can't tell
+    a deposit apart from trading profit, so a manual top-up shows up there as if it were a huge
+    winning trade). Individual trade_history rows are never touched by that reconciliation, so
+    summing them directly is unaffected by deposits/withdrawals -- a clean trading-only figure."""
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = today_start - timedelta(days=today_start.weekday())  # Monday 00:00 UTC
+    month_start = today_start.replace(day=1)
+
+    def sum_since(since: datetime) -> float:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(pnl), 0.0) AS total FROM trade_history WHERE closed_at >= ?",
+            (since.isoformat(),),
+        ).fetchone()
+        return row["total"] or 0.0
+
+    all_time_row = conn.execute("SELECT COALESCE(SUM(pnl), 0.0) AS total FROM trade_history").fetchone()
+    return {
+        "trading_pnl_today": sum_since(today_start),
+        "trading_pnl_week": sum_since(week_start),
+        "trading_pnl_month": sum_since(month_start),
+        "trading_pnl_all_time": all_time_row["total"] or 0.0,
+    }
+
+
 @app.route("/api/summary")
 @require_auth
 def summary():
@@ -77,6 +106,7 @@ def summary():
     try:
         risk = conn.execute("SELECT * FROM risk_state WHERE id = 1").fetchone()
         open_positions = conn.execute("SELECT COUNT(*) AS n FROM open_trades").fetchone()["n"]
+        pnl_windows = _trading_pnl_windows(conn)
     finally:
         conn.close()
 
@@ -95,7 +125,11 @@ def summary():
         "equity": equity,
         "peak_equity": peak_equity,
         "drawdown_pct": drawdown_pct,
+        # cumulative_pnl is kept for backward compatibility ONLY -- it can include deposits/
+        # corrections picked up by equity reconciliation (see _trading_pnl_windows' docstring).
+        # Use trading_pnl_* for an honest trading-only figure.
         "cumulative_pnl": risk["cumulative_pnl"] or 0.0,
+        **pnl_windows,
         "closed_trades": closed_trades,
         "winning_trades": winning_trades,
         "losing_trades": risk["losing_trades"] or 0,
