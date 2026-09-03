@@ -6,6 +6,8 @@ never corrupt or block the bot's own state writes. Meant to sit behind a reverse
 """
 from __future__ import annotations
 
+import csv
+import io
 import os
 import secrets
 import sqlite3
@@ -204,6 +206,29 @@ def trades():
         "total": total,
         "total_pages": max(1, (total + page_size - 1) // page_size),
     })
+
+
+@app.route("/api/trades/export.csv")
+@require_auth
+def export_trades_csv():
+    """Every closed trade, unpaginated -- opens directly in Excel/Sheets/Numbers.
+    Read-only (same mode=ro connection as every other route here)."""
+    conn = _connect_readonly()
+    try:
+        rows = [dict(r) for r in conn.execute("SELECT * FROM trade_history ORDER BY closed_at DESC")]
+    finally:
+        conn.close()
+
+    buffer = io.StringIO()
+    if rows:
+        writer = csv.DictWriter(buffer, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+    return Response(
+        buffer.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=trade_history.csv"},
+    )
 
 
 @app.route("/api/equity-curve")
