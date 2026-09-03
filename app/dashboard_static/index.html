@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Trading Dashboard</title>
+<title>SOL/USDT Futures Desk</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -17,7 +17,9 @@
     --ink-muted: #898781;
     --gridline: #e1e0d9;
     --border: rgba(11,11,11,0.10);
-    --accent: #2a78d6;
+    --accent: #7c3aed;
+    --accent-2: #0d9488;
+    --accent-wash: rgba(124,58,237,0.07);
     --good: #0ca30c;
     --bad: #d03b3b;
     --shadow: 0 1px 2px rgba(11,11,11,0.04), 0 8px 24px rgba(11,11,11,0.06);
@@ -32,7 +34,9 @@
       --ink-muted: #898781;
       --gridline: #2c2c2a;
       --border: rgba(255,255,255,0.10);
-      --accent: #3987e5;
+      --accent: #a78bfa;
+      --accent-2: #2dd4bf;
+      --accent-wash: rgba(167,139,250,0.10);
       --good: #1fbf1f;
       --bad: #e66767;
       --shadow: 0 1px 2px rgba(0,0,0,0.3), 0 8px 24px rgba(0,0,0,0.4);
@@ -48,8 +52,14 @@
   }
   .wrap { max-width: 900px; margin: 0 auto; padding: 28px 18px 80px; }
   h1, h2 { font-family: "Fraunces", Georgia, serif; font-weight: 600; margin: 0; }
-  header { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
-  header h1 { font-size: 1.5rem; }
+
+  .eyebrow { font-family: "IBM Plex Mono", monospace; font-size: 0.7rem; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); }
+
+  .masthead { display: flex; align-items: flex-end; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 14px; }
+  .masthead h1 { font-size: 2rem; letter-spacing: -0.01em; margin-top: 4px; }
+  .masthead-meta { display: flex; align-items: center; gap: 10px; }
+  .masthead-rule { height: 3px; border-radius: 999px; margin-bottom: 26px; background: linear-gradient(90deg, var(--accent), var(--accent-2) 70%, transparent); }
+
   .status-pill {
     font-family: "IBM Plex Mono", monospace;
     font-size: 0.72rem;
@@ -61,6 +71,23 @@
   }
   .status-pill.stale { background: var(--ink-muted); }
 
+  .hero-balance {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 8px 20px;
+    margin-bottom: 12px;
+    background: linear-gradient(135deg, var(--accent-wash), transparent 60%), var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    box-shadow: var(--shadow);
+  }
+  .hero-balance .label { font-family: "IBM Plex Mono", monospace; font-size: 0.7rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-muted); flex-basis: 100%; margin-bottom: -6px; }
+  .hero-balance .hero-value { font-family: "IBM Plex Mono", monospace; font-size: 2.1rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .hero-balance .hero-meta { font-family: "IBM Plex Mono", monospace; font-size: 0.8rem; color: var(--ink-secondary); }
+
   .stat-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -70,6 +97,7 @@
   .stat-card {
     background: var(--surface);
     border: 1px solid var(--border);
+    border-left: 3px solid var(--border);
     border-radius: 10px;
     padding: 14px 16px;
     box-shadow: var(--shadow);
@@ -78,9 +106,13 @@
   .stat-card .value { font-family: "IBM Plex Mono", monospace; font-size: 1.25rem; font-weight: 500; font-variant-numeric: tabular-nums; }
   .stat-card .value.good { color: var(--good); }
   .stat-card .value.bad { color: var(--bad); }
+  .stat-card.good { border-left-color: var(--good); }
+  .stat-card.bad { border-left-color: var(--bad); }
 
   section { margin-top: 28px; }
-  section h2 { font-size: 1.1rem; margin-bottom: 12px; }
+  .section-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; border-left: 3px solid var(--accent); padding-left: 10px; }
+  .section-head h2 { font-size: 1.1rem; }
+  .section-note { font-family: "IBM Plex Mono", monospace; font-size: 0.72rem; color: var(--ink-muted); margin: 0; }
 
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 18px; box-shadow: var(--shadow); }
   .chart-svg { width: 100%; height: auto; display: block; }
@@ -132,39 +164,53 @@
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <h1 id="symbol-title">Trading Dashboard</h1>
-    <span class="status-pill" id="status-pill">live</span>
-  </header>
+  <div class="masthead">
+    <div>
+      <div class="eyebrow">Live &middot; Futures Desk</div>
+      <h1 id="symbol-title">SOL/USDT</h1>
+    </div>
+    <div class="masthead-meta">
+      <span class="status-pill" id="status-pill">live</span>
+    </div>
+  </div>
+  <div class="masthead-rule"></div>
+
+  <div class="hero-balance" id="hero-balance"></div>
 
   <div class="stat-grid" id="stat-grid"></div>
 
   <section>
-    <h2>Trading PnL <span class="market-last-price">(closed trades only, IST days -- excludes deposits/withdrawals)</span></h2>
+    <div class="section-head">
+      <h2>Trading PnL</h2>
+      <p class="section-note">Closed trades only &middot; IST calendar days &middot; excludes deposits &amp; withdrawals</p>
+    </div>
     <div class="stat-grid" id="pnl-grid"></div>
   </section>
 
   <section>
-    <h2>Live market <span id="market-last-price" class="market-last-price"></span></h2>
+    <div class="section-head">
+      <h2>Live market</h2>
+      <span id="market-last-price" class="market-last-price"></span>
+    </div>
     <div class="card">
       <div id="market-chart"></div>
     </div>
   </section>
 
   <section>
-    <h2>Equity curve</h2>
+    <div class="section-head"><h2>Equity curve</h2></div>
     <div class="card">
       <div id="equity-chart"></div>
     </div>
   </section>
 
   <section>
-    <h2>Open positions</h2>
+    <div class="section-head"><h2>Open positions</h2></div>
     <div id="positions-list"></div>
   </section>
 
   <section>
-    <h2>Trade history</h2>
+    <div class="section-head"><h2>Trade history</h2></div>
     <div class="card">
       <div class="table-wrap">
         <table>
@@ -225,9 +271,16 @@ async function fetchJSON(url) {
 }
 
 function renderSummary(s) {
-  document.getElementById("symbol-title").textContent = s.symbol + " Dashboard";
+  document.getElementById("symbol-title").textContent = s.symbol;
+  document.title = s.symbol + " · Futures Desk";
+
+  document.getElementById("hero-balance").innerHTML = `
+    <div class="label">Balance</div>
+    <div class="hero-value">${fmtMoney(s.equity)}</div>
+    <div class="hero-meta">peak ${fmtMoney(s.peak_equity)} &middot; ${s.open_positions} open position${s.open_positions === 1 ? "" : "s"}</div>
+  `;
+
   const cards = [
-    ["Balance", fmtMoney(s.equity), ""],
     ["Win rate", s.closed_trades ? fmtPct(s.win_rate_pct).replace("+", "") : "—", ""],
     ["Closed trades", s.closed_trades, ""],
     ["Max drawdown", fmtPct(-s.drawdown_pct).replace("+", "-").replace("--","-"), s.drawdown_pct > 20 ? "bad" : ""],
@@ -235,7 +288,7 @@ function renderSummary(s) {
   ];
   const grid = document.getElementById("stat-grid");
   grid.innerHTML = cards.map(([label, value, cls]) =>
-    `<div class="stat-card"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`
+    `<div class="stat-card ${cls}"><div class="label">${label}</div><div class="value ${cls}">${value}</div></div>`
   ).join("");
 
   // Trading PnL, summed directly from closed trades -- unaffected by deposits/withdrawals,
@@ -249,7 +302,7 @@ function renderSummary(s) {
   const pnlGrid = document.getElementById("pnl-grid");
   if (pnlGrid) {
     pnlGrid.innerHTML = pnlCards.map(([label, value]) =>
-      `<div class="stat-card"><div class="label">${label}</div><div class="value ${pnlClass(value)}">${fmtMoney(value)}</div></div>`
+      `<div class="stat-card ${pnlClass(value)}"><div class="label">${label}</div><div class="value ${pnlClass(value)}">${fmtMoney(value)}</div></div>`
     ).join("");
   }
 }

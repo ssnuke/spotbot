@@ -289,11 +289,16 @@ def equity_curve():
         return jsonify([])
 
     current_equity = risk["equity"] or 0.0
-    cumulative_pnl = risk["cumulative_pnl"] or 0.0
+    # Anchor on the sum of real trade_history rows, NOT risk_state.cumulative_pnl -- that
+    # counter gets deposits/withdrawals folded into it by equity reconciliation (it can't tell
+    # a manual top-up apart from trading profit), which would shift this entire curve up or
+    # down by the deposit amount and make its endpoint disagree with the current balance shown
+    # above it. Trade rows are never touched by that reconciliation, so this stays clean.
+    total_trade_pnl = sum(row["pnl"] or 0.0 for row in rows)
     # Walk forward from the implied starting point so the curve ends exactly at current
     # equity -- an approximation (funding payments outside of trade PnL aren't broken out
     # separately here), close enough for a glance-at-it dashboard.
-    running = current_equity - cumulative_pnl
+    running = current_equity - total_trade_pnl
     points = [{"date": None, "equity": running}]
     for row in rows:
         running += row["pnl"]

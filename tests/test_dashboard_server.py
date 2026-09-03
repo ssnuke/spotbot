@@ -190,6 +190,28 @@ def test_trading_pnl_today_boundary_uses_ist_not_utc(tmp_path):
     assert windows["trading_pnl_all_time"] == pytest.approx(5.0)
 
 
+def test_equity_curve_ignores_deposit_polluted_cumulative_pnl(monkeypatch, tmp_path):
+    db_path = tmp_path / "live_state.db"
+    trades = [
+        (10.0, "2026-01-01T01:00:00+00:00"),
+        (-3.0, "2026-01-02T01:00:00+00:00"),
+        (5.0, "2026-01-03T01:00:00+00:00"),
+    ]
+    _seed_full_db(db_path, trades)  # cumulative_pnl seeded as 675.09 + sum(pnls) -- deposit-polluted
+    monkeypatch.setattr(dashboard_module, "DB_PATH", str(db_path))
+    client = _client(monkeypatch)
+
+    response = client.get("/api/equity-curve", headers=_auth_headers())
+
+    assert response.status_code == 200
+    points = response.get_json()
+    assert len(points) == 4  # implied start + one per trade
+    # the curve must end exactly at current equity (793.37, per _seed_full_db) --
+    # not shifted down by the 675.09 "deposit" folded into cumulative_pnl
+    assert points[-1]["equity"] == pytest.approx(793.37)
+    assert points[0]["equity"] == pytest.approx(793.37 - sum(p for p, _ in trades))
+
+
 def test_export_trades_csv_handles_empty_history(monkeypatch, tmp_path):
     db_path = tmp_path / "live_state.db"
     conn = sqlite3.connect(str(db_path))
